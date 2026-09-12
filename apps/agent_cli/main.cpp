@@ -10,18 +10,19 @@ namespace {
 
 class DemoModel final : public agent::IModel {
 public:
-    agent::ModelResponse generate(const std::vector<agent::Message>& messages) override {
+    agent::ModelResponse generate(const agent::ModelRequest& request) override {
+        const auto& messages = request.messages;
         if (messages.empty()) {
-            return {"No input was provided.", {}, true};
+            return {"No input was provided.", {}, true, {}};
         }
 
         const auto& last = messages.back();
         if (last.role == agent::Role::Tool) {
-            return {"The tool returned: " + last.content, {}, true};
+            return {"The tool returned: " + last.content, {}, true, {}};
         }
 
         if (last.role != agent::Role::User) {
-            return {"Waiting for user input.", {}, true};
+            return {"Waiting for user input.", {}, true, {}};
         }
 
         constexpr std::string_view prefix = "calc ";
@@ -29,8 +30,8 @@ public:
             agent::ToolCall call;
             call.id = "demo-call-1";
             call.name = "calculator";
-            call.arguments["expression"] = last.content.substr(prefix.size());
-            return {"I'll calculate that.", {std::move(call)}, false};
+            call.arguments = {{"expression", last.content.substr(prefix.size())}};
+            return {"I'll calculate that.", {std::move(call)}, false, {}};
         }
 
         return {
@@ -38,6 +39,7 @@ public:
                 "\nTip: enter `calc 21 * 2` to exercise the agent tool loop.",
             {},
             true,
+            {},
         };
     }
 };
@@ -101,4 +103,3 @@ int main(int argc, char** argv) {
                   << result.output << '\n';
     }
 }
-

@@ -802,11 +802,11 @@ M0 为减少样板代码暂时采用较浅目录；模块增长时按上述结�
 |---|---|---|
 | 核心 Loop | M0 可运行 | 串行 Tool Call、步数和连续错误限制 |
 | Context | M0 可运行 | 字符估算和确定性文本摘要 |
-| Tool Registry | M0 可运行 | 字符串参数，尚未接 JSON Schema |
+| Tool Registry | M1 进行中 | 已迁移 JSON 参数与 Schema，完整校验待实现 |
 | Calculator Tool | 可运行 | 用于验证最小闭环 |
 | Skill Registry | M0 可运行 | 扫描 frontmatter，尚未注入 Loop |
 | CLI / Trace | M0 可运行 | Fake Model 交互演示 |
-| OpenAI Model | 未实现 | M1 |
+| OpenAI Model | M1 进行中 | Responses Codec、SSE 和 Fake Transport 已实现；真实 HTTP Transport 待实现 |
 | 文件与命令工具 | 未实现 | M2 |
 | 结构化压缩 | 未实现 | M3 |
 | Skill 激活 | 未实现 | M4 |

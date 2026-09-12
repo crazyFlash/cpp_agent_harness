@@ -1,10 +1,13 @@
 CXX ?= c++
 CXXFLAGS ?= -std=c++20 -Wall -Wextra -Wpedantic -O2
-CPPFLAGS ?= -Iinclude
+CPPFLAGS ?= -Iinclude -Ithird_party
 
 LIB_SOURCES := \
 	src/agent_loop.cpp \
 	src/context_manager.cpp \
+	src/openai/responses_model.cpp \
+	src/openai/responses_stream.cpp \
+	src/openai/sse_parser.cpp \
 	src/skill_registry.cpp \
 	src/tool_registry.cpp \
 	src/tools/calculator_tool.cpp
@@ -24,4 +27,3 @@ test: agent-tests
 
 clean:
 	$(RM) cpp-agent agent-tests
-

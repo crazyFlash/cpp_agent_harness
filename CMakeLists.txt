@@ -9,12 +9,15 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_library(agent_harness
     src/agent_loop.cpp
     src/context_manager.cpp
+    src/openai/responses_model.cpp
+    src/openai/responses_stream.cpp
+    src/openai/sse_parser.cpp
     src/skill_registry.cpp
     src/tool_registry.cpp
     src/tools/calculator_tool.cpp
 )
 
-target_include_directories(agent_harness PUBLIC include)
+target_include_directories(agent_harness PUBLIC include third_party)
 target_compile_options(agent_harness PRIVATE -Wall -Wextra -Wpedantic)
 
 add_executable(cpp-agent apps/agent_cli/main.cpp)
@@ -24,4 +27,3 @@ enable_testing()
 add_executable(agent-tests tests/agent_tests.cpp)
 target_link_libraries(agent-tests PRIVATE agent_harness)
 add_test(NAME agent-tests COMMAND agent-tests)
-

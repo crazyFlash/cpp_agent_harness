@@ -5,7 +5,11 @@
 #include <string>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 namespace agent {
+
+using Json = nlohmann::json;
 
 enum class Role {
     System,
@@ -18,7 +22,13 @@ enum class Role {
 struct ToolCall {
     std::string id;
     std::string name;
-    std::map<std::string, std::string> arguments;
+    Json arguments{Json::object()};
+};
+
+struct ToolDefinition {
+    std::string name;
+    std::string description;
+    Json parameters_schema{Json::object()};
 };
 
 struct Message {
@@ -33,6 +43,12 @@ struct ModelResponse {
     std::string text;
     std::vector<ToolCall> tool_calls;
     bool final{true};
+    std::string response_id;
+};
+
+struct ModelRequest {
+    std::vector<Message> messages;
+    std::vector<ToolDefinition> tools;
 };
 
 struct ToolResult {
@@ -69,4 +85,3 @@ inline std::string role_name(Role role) {
 }
 
 }  // namespace agent
-
