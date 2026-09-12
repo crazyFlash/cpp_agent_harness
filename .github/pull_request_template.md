@@ -1,6 +1,6 @@
 ## Summary
 
-- 
+<!-- Describe the user-visible behavior and design choices. -->
 
 ## Verification
 
@@ -10,4 +10,4 @@
 
 ## Review notes
 
-- 
+<!-- Point reviewers to risky or non-obvious code. -->

@@ -77,4 +77,3 @@ void SseParser::dispatch(std::vector<SseEvent>& output) {
 }
 
 }  // namespace agent::openai
-
