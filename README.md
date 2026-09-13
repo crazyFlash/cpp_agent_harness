@@ -21,8 +21,12 @@ The M1 protocol layer under development adds:
 - SSE framing across arbitrary network chunk boundaries.
 - Streaming text and function-call argument assembly.
 - Deterministic protocol tests using a fake HTTP transport.
+- JSON configuration with environment-variable overrides.
+- A real curl-based HTTP transport for Responses API endpoints.
+- A reserved provider boundary for future local-model protocols.
 
 See [docs/design.md](docs/design.md) for the architecture and roadmap.
+See [docs/configuration.md](docs/configuration.md) for startup configuration.
 
 ## Build
 
@@ -56,13 +60,34 @@ assistant: The tool returned: 42
 
 Use `./cpp-agent --trace` to print loop and tool events.
 
+## API configuration
+
+Copy the example, select `responses_api`, set the model, and keep the API key
+in an environment variable:
+
+```sh
+cp config/agent.example.json config/agent.local.json
+export OPENAI_API_KEY='your-api-key'
+./cpp-agent --config config/agent.local.json
+```
+
+Validate configuration without accessing the network:
+
+```sh
+./cpp-agent --config config/agent.local.json --check-config
+```
+
+A local server that implements the Responses API can be selected with a
+localhost `api.base_url` and `api.require_api_key: false`. The separate
+`local` provider is reserved for a future protocol and is not executable yet.
+
 ## Status
 
 This is the M0 foundation, not a production sandbox. Model-provider adapters,
 safe command execution, structured compaction, and MCP are tracked as the next
 milestones in the design document.
 
-The Responses API codec follows the official API reference:
+The Responses API codec and transport follow the official API reference:
 <https://developers.openai.com/api/reference/resources/responses/methods/create>.
-An actual network transport is intentionally kept separate from the codec so
-protocol tests never require an API key.
+The network transport remains separate from the codec so protocol tests never
+require an external API key.
