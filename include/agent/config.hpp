@@ -50,6 +50,8 @@ using EnvironmentReader =
 class ConfigLoader {
 public:
     static AppConfig load_file(const std::filesystem::path& path);
+    static void save_file(const AppConfig& config,
+                          const std::filesystem::path& path);
     static void apply_environment(AppConfig& config,
                                   const EnvironmentReader& environment);
     static void validate(const AppConfig& config);

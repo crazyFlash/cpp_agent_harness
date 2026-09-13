@@ -51,6 +51,16 @@ ctest --test-dir build --output-on-failure
 ./cpp-agent
 ```
 
+On the first interactive start, the CLI checks for API configuration and opens
+a setup wizard when none is found. Non-secret settings can be saved to
+`config/agent.local.json`; API keys are never written there.
+
+Start the offline demo explicitly:
+
+```sh
+./cpp-agent --demo
+```
+
 Try a normal message or exercise the tool loop:
 
 ```text
@@ -58,7 +68,7 @@ Try a normal message or exercise the tool loop:
 assistant: The tool returned: 42
 ```
 
-Use `./cpp-agent --trace` to print loop and tool events.
+Use `./cpp-agent --demo --trace` to print loop and tool events in Demo mode.
 
 ## API configuration
 

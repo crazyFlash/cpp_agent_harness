@@ -1,5 +1,33 @@
 # 配置说明
 
+## 启动流程
+
+交互终端无参数启动时，程序按以下顺序检查：
+
+1. `--config PATH`；
+2. `CPP_AGENT_CONFIG`；
+3. 默认文件 `config/agent.local.json`；
+4. `CPP_AGENT_PROVIDER` 等纯环境变量配置；
+5. 以上都不存在时进入 API 配置向导。
+
+```bash
+./cpp-agent
+```
+
+向导依次询问 API Base URL、模型、是否需要 API Key 以及 Key 所在的环境变量。如果环境变量中没有 Key，会关闭终端回显后读取一次，仅保留在当前进程内。保存配置时只写入非敏感设置。
+
+也可以显式重新运行向导：
+
+```bash
+./cpp-agent --init-config
+```
+
+非交互环境不会等待输入；没有配置时会返回错误。离线 Demo 必须显式启动：
+
+```bash
+./cpp-agent --demo
+```
+
 ## 配置来源与优先级
 
 启动配置按以下顺序合并，后面的值覆盖前面的值：

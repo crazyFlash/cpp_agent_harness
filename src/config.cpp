@@ -205,6 +205,61 @@ AppConfig ConfigLoader::load_file(const std::filesystem::path& path) {
     return config;
 }
 
+void ConfigLoader::save_file(const AppConfig& config,
+                             const std::filesystem::path& path) {
+    validate(config);
+    Json document = {
+        {"provider", provider_name(config.provider)},
+        {"trace", config.trace},
+        {"skills_directory", config.skills_directory.string()},
+        {"api",
+         {
+             {"base_url", config.api.base_url},
+             {"model", config.api.model},
+             {"api_key_env", config.api.api_key_env},
+             {"require_api_key", config.api.require_api_key},
+             {"timeout_ms", config.api.timeout.count()},
+             {"store", config.api.store},
+         }},
+        {"local",
+         {
+             {"protocol", config.local.protocol},
+             {"endpoint", config.local.endpoint},
+             {"model", config.local.model},
+             {"options", config.local.options},
+         }},
+        {"context",
+         {
+             {"max_estimated_tokens", config.context.max_estimated_tokens},
+             {"compact_at_ratio", config.context.compact_at_ratio},
+             {"keep_recent_messages", config.context.keep_recent_messages},
+         }},
+        {"loop",
+         {
+             {"max_steps", config.loop.max_steps},
+             {"max_consecutive_tool_errors",
+              config.loop.max_consecutive_tool_errors},
+         }},
+    };
+
+    if (!path.parent_path().empty()) {
+        std::error_code error;
+        std::filesystem::create_directories(path.parent_path(), error);
+        if (error) {
+            throw std::runtime_error(
+                "cannot create configuration directory: " + error.message());
+        }
+    }
+    std::ofstream output(path, std::ios::trunc);
+    if (!output) {
+        throw std::runtime_error("cannot write configuration file: " + path.string());
+    }
+    output << document.dump(2) << '\n';
+    if (!output) {
+        throw std::runtime_error("cannot finish configuration file: " + path.string());
+    }
+}
+
 void ConfigLoader::apply_environment(AppConfig& config,
                                      const EnvironmentReader& environment) {
     if (const auto value = environment("CPP_AGENT_PROVIDER")) {

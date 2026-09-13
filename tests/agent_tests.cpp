@@ -304,7 +304,19 @@ void test_configuration_loading_and_environment() {
                 "http://127.0.0.1:8080/v1/responses",
             "Responses endpoint should normalize its slash");
 
+    const auto saved_path = std::filesystem::temp_directory_path() /
+                            "cpp-agent-harness-saved-config.json";
+    agent::ConfigLoader::save_file(config, saved_path);
+    const auto saved = agent::ConfigLoader::load_file(saved_path);
+    require(saved.api.model == "environment-model",
+            "saved configuration should be loadable");
+    std::ifstream saved_file(saved_path);
+    const auto saved_json = agent::Json::parse(saved_file);
+    require(!saved_json["api"].contains("api_key"),
+            "saved configuration must not contain an API key");
+
     std::filesystem::remove(path);
+    std::filesystem::remove(saved_path);
 }
 
 void test_local_configuration_is_reserved() {

@@ -17,12 +17,15 @@ class FakeResponsesHandler(http.server.BaseHTTPRequestHandler):
         try:
             if self.path != "/v1/responses":
                 raise AssertionError(f"unexpected path: {self.path}")
-            if self.headers.get("Authorization") != "Bearer integration-secret":
-                raise AssertionError("missing or incorrect bearer token")
-
             length = int(self.headers["Content-Length"])
             request = json.loads(self.rfile.read(length))
-            if request["model"] != "integration-model":
+            if request["model"] == "integration-model":
+                if self.headers.get("Authorization") != "Bearer integration-secret":
+                    raise AssertionError("missing or incorrect bearer token")
+            elif request["model"] == "wizard-model":
+                if self.headers.get("Authorization") is not None:
+                    raise AssertionError("keyless endpoint received authorization")
+            else:
                 raise AssertionError("model was not loaded from configuration")
             if request["input"][-1]["content"] != "hello from integration test":
                 raise AssertionError("user input was not encoded")
@@ -107,6 +110,75 @@ def main():
                 )
             if FakeResponsesHandler.request_error is not None:
                 raise FakeResponsesHandler.request_error
+
+        with tempfile.TemporaryDirectory(prefix="cpp-agent-default-config-") as directory:
+            directory_path = pathlib.Path(directory)
+            config_directory = directory_path / "config"
+            config_directory.mkdir()
+            (config_directory / "agent.local.json").write_text(
+                json.dumps(
+                    {
+                        "provider": "responses_api",
+                        "api": {
+                            "base_url": f"http://127.0.0.1:{server.server_port}/v1",
+                            "model": "integration-model",
+                            "api_key_env": "INTEGRATION_API_KEY",
+                            "require_api_key": True,
+                        },
+                    }
+                )
+            )
+            environment = os.environ.copy()
+            environment["INTEGRATION_API_KEY"] = "integration-secret"
+            process = subprocess.run(
+                [str(executable)],
+                input="hello from integration test\nquit\n",
+                text=True,
+                capture_output=True,
+                cwd=directory_path,
+                env=environment,
+                timeout=10,
+                check=False,
+            )
+            if process.returncode != 0:
+                raise AssertionError(
+                    f"default config startup exited {process.returncode}: "
+                    f"{process.stderr}"
+                )
+            if "assistant: integration response" not in process.stdout:
+                raise AssertionError("default configuration was not auto-loaded")
+
+        with tempfile.TemporaryDirectory(prefix="cpp-agent-wizard-") as directory:
+            base_url = f"http://127.0.0.1:{server.server_port}/v1"
+            wizard_input = "\n".join(
+                [
+                    base_url,
+                    "wizard-model",
+                    "n",  # no API key
+                    "n",  # do not save
+                    "hello from integration test",
+                    "quit",
+                    "",
+                ]
+            )
+            process = subprocess.run(
+                [str(executable), "--init-config"],
+                input=wizard_input,
+                text=True,
+                capture_output=True,
+                cwd=directory,
+                env=os.environ.copy(),
+                timeout=10,
+                check=False,
+            )
+            if process.returncode != 0:
+                raise AssertionError(
+                    f"setup wizard exited {process.returncode}: {process.stderr}"
+                )
+            if "No API configuration was found." not in process.stdout:
+                raise AssertionError("setup wizard did not run")
+            if "assistant: integration response" not in process.stdout:
+                raise AssertionError("wizard settings were not used for startup")
     finally:
         server.shutdown()
         server.server_close()
