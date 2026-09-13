@@ -1,4 +1,6 @@
 #include "agent/agent_loop.hpp"
+#include "agent/config.hpp"
+#include "agent/curl_cli_transport.hpp"
 #include "agent/openai/responses_model.hpp"
 #include "agent/openai/responses_stream.hpp"
 #include "agent/openai/sse_parser.hpp"
@@ -9,6 +11,7 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <map>
 #include <stdexcept>
 #include <string>
 
@@ -18,6 +21,16 @@ void require(bool condition, const std::string& message) {
     if (!condition) {
         throw std::runtime_error(message);
     }
+}
+
+template <typename Function>
+void require_throws(Function&& function, const std::string& message) {
+    try {
+        function();
+    } catch (const std::exception&) {
+        return;
+    }
+    throw std::runtime_error(message);
 }
 
 class ToolCallingModel final : public agent::IModel {
@@ -218,6 +231,123 @@ void test_streamed_function_call_assembly() {
             "stream should concatenate and parse argument deltas");
 }
 
+void test_configuration_loading_and_environment() {
+    const auto path = std::filesystem::temp_directory_path() /
+                      "cpp-agent-harness-config-test.json";
+    {
+        std::ofstream file(path);
+        file << R"({
+            "provider": "responses_api",
+            "trace": false,
+            "api": {
+                "base_url": "http://127.0.0.1:8080/v1/",
+                "model": "",
+                "api_key_env": "TEST_API_KEY",
+                "require_api_key": tru,
+                "timeout_ms": 2500,
+                "store": false
+            },
+            "context": {"max_estimated_tokens": 2048},
+            "loop": {"max_steps": 7}
+        })";
+    }
+
+    require_throws(
+        [&]() { (void)agent::ConfigLoader::load_file(path); },
+        "invalid JSON configuration should fail");
+
+    {
+        std::ofstream file(path);
+        file << R"({
+            "provider": "responses_api",
+            "trace": false,
+            "api": {
+                "base_url": "http://127.0.0.1:8080/v1/",
+                "model": "",
+                "api_key_env": "TEST_API_KEY",
+                "require_api_key": true,
+                "timeout_ms": 2500,
+                "store": false
+            },
+            "context": {"max_estimated_tokens": 2048},
+            "loop": {"max_steps": 7}
+        })";
+    }
+
+    auto config = agent::ConfigLoader::load_file(path);
+    const std::map<std::string, std::string> environment{
+        {"CPP_AGENT_MODEL", "environment-model"},
+        {"CPP_AGENT_TRACE", "true"},
+        {"TEST_API_KEY", "test-secret"},
+    };
+    const auto reader = [&environment](const std::string& name)
+        -> std::optional<std::string> {
+        const auto value = environment.find(name);
+        if (value == environment.end()) {
+            return std::nullopt;
+        }
+        return value->second;
+    };
+    agent::ConfigLoader::apply_environment(config, reader);
+
+    require(config.provider == agent::ProviderKind::ResponsesApi,
+            "provider should load from file");
+    require(config.api.model == "environment-model",
+            "environment should override model from file");
+    require(config.trace, "environment should override trace");
+    require(config.context.max_estimated_tokens == 2048,
+            "context configuration should load");
+    require(config.loop.max_steps == 7, "loop configuration should load");
+    require(agent::ConfigLoader::resolve_api_key(config, reader) == "test-secret",
+            "API key should resolve through the configured environment name");
+    require(agent::ConfigLoader::responses_endpoint(config.api) ==
+                "http://127.0.0.1:8080/v1/responses",
+            "Responses endpoint should normalize its slash");
+
+    std::filesystem::remove(path);
+}
+
+void test_local_configuration_is_reserved() {
+    agent::AppConfig config;
+    config.provider = agent::ProviderKind::Local;
+    config.local.protocol = "future-protocol";
+    config.local.options = {{"arbitrary", 42}};
+    agent::ConfigLoader::validate(config);
+    require(config.local.options["arbitrary"] == 42,
+            "local provider should preserve protocol-specific options");
+}
+
+void test_responses_model_without_api_key() {
+    FakeHttpTransport transport;
+    transport.response = {
+        200,
+        {},
+        R"({"id":"resp_local","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"local ok"}]}]})",
+    };
+    agent::openai::ResponsesConfig config;
+    config.endpoint = "http://127.0.0.1:8080/v1/responses";
+    config.model = "local-model";
+    config.require_api_key = false;
+    agent::openai::ResponsesModel model(transport, config);
+
+    agent::ModelRequest request;
+    request.messages.push_back({agent::Role::User, "hello", {}, {}, false});
+    const auto response = model.generate(request);
+    require(response.text == "local ok", "keyless local API should return text");
+    require(!transport.last_request.headers.contains("Authorization"),
+            "keyless local API should not send authorization");
+}
+
+void test_curl_transport_rejects_header_injection() {
+    agent::CurlCliTransport transport;
+    agent::HttpRequest request;
+    request.url = "http://127.0.0.1:1/v1/responses";
+    request.headers["Authorization"] = "Bearer safe\r\nInjected: value";
+    require_throws(
+        [&]() { (void)transport.send(request); },
+        "HTTP transport should reject CRLF header injection before execution");
+}
+
 }  // namespace
 
 int main() {
@@ -230,6 +360,10 @@ int main() {
         test_responses_model_with_fake_transport();
         test_sse_parser_across_chunks();
         test_streamed_function_call_assembly();
+        test_configuration_loading_and_environment();
+        test_local_configuration_is_reserved();
+        test_responses_model_without_api_key();
+        test_curl_transport_rejects_header_injection();
         std::cout << "All tests passed\n";
         return 0;
     } catch (const std::exception& error) {

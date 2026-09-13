@@ -8,7 +8,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(agent_harness
     src/agent_loop.cpp
+    src/config.cpp
     src/context_manager.cpp
+    src/curl_cli_transport.cpp
     src/openai/responses_model.cpp
     src/openai/responses_stream.cpp
     src/openai/sse_parser.cpp
@@ -27,3 +29,18 @@ enable_testing()
 add_executable(agent-tests tests/agent_tests.cpp)
 target_link_libraries(agent-tests PRIVATE agent_harness)
 add_test(NAME agent-tests COMMAND agent-tests)
+
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    add_test(
+        NAME api-integration-test
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_SOURCE_DIR}/tests/integration_api_test.py
+            $<TARGET_FILE:cpp-agent>
+    )
+    set_tests_properties(
+        api-integration-test
+        PROPERTIES WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    )
+endif()

@@ -14,6 +14,7 @@ struct ResponsesConfig {
     std::string model;
     std::chrono::milliseconds timeout{60000};
     bool store{false};
+    bool require_api_key{true};
 };
 
 class ResponsesCodec {

@@ -164,24 +164,31 @@ ResponsesModel::ResponsesModel(IHttpTransport& transport, ResponsesConfig config
     : transport_(transport), config_(std::move(config)) {}
 
 ModelResponse ResponsesModel::generate(const ModelRequest& request) {
-    if (config_.api_key.empty()) {
+    if (config_.require_api_key && config_.api_key.empty()) {
         throw std::invalid_argument("Responses API key cannot be empty");
     }
 
     const auto body = ResponsesCodec::encode_request(request, config_);
     HttpRequest http_request;
     http_request.url = config_.endpoint;
-    http_request.headers = {
-        {"Authorization", "Bearer " + config_.api_key},
-        {"Content-Type", "application/json"},
-    };
+    http_request.headers = {{"Content-Type", "application/json"}};
+    if (!config_.api_key.empty()) {
+        http_request.headers["Authorization"] = "Bearer " + config_.api_key;
+    }
     http_request.body = body.dump();
     http_request.timeout = config_.timeout;
 
     const auto response = transport_.send(http_request);
     if (response.status_code < 200 || response.status_code >= 300) {
+        std::string detail = response.body;
+        constexpr std::size_t max_detail = 1000;
+        if (detail.size() > max_detail) {
+            detail.resize(max_detail);
+            detail += "...";
+        }
         throw std::runtime_error(
-            "Responses API HTTP status " + std::to_string(response.status_code));
+            "Responses API HTTP status " + std::to_string(response.status_code) +
+            (detail.empty() ? std::string{} : ": " + detail));
     }
 
     try {
