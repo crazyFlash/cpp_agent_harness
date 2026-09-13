@@ -20,6 +20,7 @@ struct RunResult {
     bool ok{false};
     std::string output;
     std::size_t steps{0};
+    TokenUsage usage;
 };
 
 using EventCallback = std::function<void(const AgentEvent&)>;
@@ -45,4 +46,3 @@ private:
 };
 
 }  // namespace agent
-

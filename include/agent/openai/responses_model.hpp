@@ -14,6 +14,8 @@ struct ResponsesConfig {
     std::string model;
     std::chrono::milliseconds timeout{60000};
     bool store{false};
+    bool require_api_key{true};
+    bool stream{true};
 };
 
 class ResponsesCodec {
@@ -27,7 +29,8 @@ public:
 class ResponsesModel final : public IModel {
 public:
     ResponsesModel(IHttpTransport& transport, ResponsesConfig config);
-    ModelResponse generate(const ModelRequest& request) override;
+    ModelResponse generate(const ModelRequest& request,
+                           const TextDeltaCallback& on_text_delta = {}) override;
 
 private:
     IHttpTransport& transport_;

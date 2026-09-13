@@ -1,4 +1,7 @@
 #include "agent/agent_loop.hpp"
+#include "agent/cli_commands.hpp"
+#include "agent/config.hpp"
+#include "agent/curl_cli_transport.hpp"
 #include "agent/openai/responses_model.hpp"
 #include "agent/openai/responses_stream.hpp"
 #include "agent/openai/sse_parser.hpp"
@@ -9,6 +12,7 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <map>
 #include <stdexcept>
 #include <string>
 
@@ -20,17 +24,30 @@ void require(bool condition, const std::string& message) {
     }
 }
 
+template <typename Function>
+void require_throws(Function&& function, const std::string& message) {
+    try {
+        function();
+    } catch (const std::exception&) {
+        return;
+    }
+    throw std::runtime_error(message);
+}
+
 class ToolCallingModel final : public agent::IModel {
 public:
-    agent::ModelResponse generate(const agent::ModelRequest& request) override {
+    agent::ModelResponse generate(
+        const agent::ModelRequest& request,
+        const TextDeltaCallback& = {}) override {
         const auto& messages = request.messages;
         if (messages.back().role == agent::Role::Tool) {
-            return {"answer=" + messages.back().content, {}, true, {}};
+            return {"answer=" + messages.back().content, {}, true, {}, {}};
         }
         return {
             "using calculator",
             {{"call-1", "calculator", agent::Json{{"expression", "21 * 2"}}}},
             false,
+            {},
             {},
         };
     }
@@ -70,6 +87,8 @@ void test_context_compaction() {
     }
 
     require(context.maybe_compact(), "context should compact over its budget");
+    require(context.stats().compaction_count == 1,
+            "context stats should count compactions");
     require(context.history().size() == 2, "recent messages should be retained");
     require(context.summary().find("number 0") != std::string::npos,
             "summary should include older messages");
@@ -147,6 +166,12 @@ void test_responses_model_with_fake_transport() {
         agent::Json{
             {"id", "resp_123"},
             {"status", "completed"},
+            {"usage",
+             {{"input_tokens", 12},
+              {"output_tokens", 7},
+              {"total_tokens", 19},
+              {"input_tokens_details", {{"cached_tokens", 3}}},
+              {"output_tokens_details", {{"reasoning_tokens", 2}}}}},
             {"output",
              agent::Json::array({
                  {{"type", "function_call"},
@@ -158,22 +183,64 @@ void test_responses_model_with_fake_transport() {
         }.dump(),
     };
 
-    agent::openai::ResponsesModel model(
-        transport,
-        {"https://example.test/v1/responses", "test-key", "test-model"});
+    agent::openai::ResponsesConfig non_streaming;
+    non_streaming.endpoint = "https://example.test/v1/responses";
+    non_streaming.api_key = "test-key";
+    non_streaming.model = "test-model";
+    non_streaming.stream = false;
+    agent::openai::ResponsesModel model_with_json(transport, non_streaming);
     agent::ModelRequest request;
     request.messages.push_back({agent::Role::User, "8 * 9", {}, {}, false});
     request.tools.push_back(agent::CalculatorTool{}.definition());
 
-    const auto response = model.generate(request);
+    const auto response = model_with_json.generate(request);
     require(!response.final, "function call response should continue the loop");
     require(response.response_id == "resp_123", "response id should be retained");
     require(response.tool_calls.size() == 1, "one function call should decode");
     require(response.tool_calls[0].id == "call_123", "call_id should be used for output");
     require(response.tool_calls[0].arguments["expression"] == "8 * 9",
             "function arguments should decode as JSON");
+    require(response.usage.reported && response.usage.total_tokens == 19,
+            "Responses API usage should be retained");
+    require(response.usage.cached_tokens == 3 &&
+                response.usage.reasoning_tokens == 2,
+            "detailed token usage should be retained");
     require(transport.last_request.headers.at("Authorization") == "Bearer test-key",
             "transport request should carry bearer auth");
+}
+
+void test_responses_request_handles_utf8_input() {
+    FakeHttpTransport transport;
+    transport.response = {
+        200,
+        {},
+        R"({"id":"resp_utf8","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]})",
+    };
+    agent::openai::ResponsesConfig config;
+    config.endpoint = "https://example.test/v1/responses";
+    config.api_key = "test-key";
+    config.model = "test-model";
+    config.stream = false;
+    agent::openai::ResponsesModel model(transport, config);
+
+    agent::ModelRequest valid_request;
+    valid_request.messages.push_back(
+        {agent::Role::User, "介绍一下自己", {}, {}, false});
+    require(model.generate(valid_request).text == "ok",
+            "valid Chinese UTF-8 input should be serialized");
+    const auto valid_body = agent::Json::parse(transport.last_request.body);
+    require(valid_body["input"][0]["content"] == "介绍一下自己",
+            "valid Chinese input should remain unchanged");
+
+    std::string incomplete_utf8 = "text";
+    incomplete_utf8.push_back(static_cast<char>(0xE5));
+    agent::ModelRequest incomplete_request;
+    incomplete_request.messages.push_back(
+        {agent::Role::User, incomplete_utf8, {}, {}, false});
+    require(model.generate(incomplete_request).text == "ok",
+            "incomplete terminal UTF-8 should not abort the model request");
+    require(transport.last_request.body.find("\xEF\xBF\xBD") != std::string::npos,
+            "invalid UTF-8 should be replaced with the Unicode replacement character");
 }
 
 void test_sse_parser_across_chunks() {
@@ -218,6 +285,227 @@ void test_streamed_function_call_assembly() {
             "stream should concatenate and parse argument deltas");
 }
 
+void test_responses_model_streams_text_deltas() {
+    FakeHttpTransport transport;
+    transport.response.status_code = 200;
+    transport.response.body =
+        "event: response.output_text.delta\n"
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello \"}\n\n"
+        "event: response.output_text.delta\n"
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"world\"}\n\n"
+        "event: response.completed\n"
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_stream\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello world\"}]}]}}\n\n";
+
+    agent::openai::ResponsesConfig config;
+    config.endpoint = "https://example.test/v1/responses";
+    config.api_key = "test-key";
+    config.model = "stream-model";
+    agent::openai::ResponsesModel model(transport, config);
+    agent::ModelRequest request;
+    request.messages.push_back({agent::Role::User, "hello", {}, {}, false});
+    std::string deltas;
+    const auto response = model.generate(
+        request, [&](std::string_view delta) { deltas += delta; });
+
+    require(deltas == "hello world", "stream callback should receive text deltas");
+    require(response.text == "hello world", "stream should assemble final response");
+    require(agent::Json::parse(transport.last_request.body)["stream"] == true,
+            "streaming model request should enable stream mode");
+}
+
+void test_cli_commands() {
+    const auto directory = std::filesystem::temp_directory_path() /
+                           "cpp-agent-command-skills";
+    std::filesystem::create_directories(directory / "sample");
+    {
+        std::ofstream skill(directory / "sample" / "SKILL.md");
+        skill << "---\nname: sample\ndescription: Sample skill\n---\nDo sample work.\n";
+    }
+    agent::SkillRegistry skills;
+    skills.load_directory(directory);
+    agent::AppConfig config;
+    config.provider = agent::ProviderKind::ResponsesApi;
+    config.api.model = "old-model";
+    config.api.api_key_env = "SECRET_ENV";
+    agent::ToolRegistry tools;
+    tools.add(std::make_unique<agent::CalculatorTool>());
+    agent::ContextManager context;
+    agent::CliCommandProcessor commands(config, skills, tools, context);
+
+    require(!commands.process("hello").handled,
+            "ordinary input should not be treated as a command");
+    const auto changed = commands.process("/model new-model");
+    require(changed.model_changed && config.api.model == "new-model",
+            "/model should switch the session model");
+    require(commands.process("/skills").output.find("sample") != std::string::npos,
+            "/skills should list loaded skills");
+    require(commands.process("/skills sample").output.find("Do sample work") !=
+                std::string::npos,
+            "/skills NAME should show instructions");
+    require(commands.process("/config").output.find("SECRET_ENV") !=
+                std::string::npos,
+            "/config should show the key environment name");
+    require(commands.process("/tools").output.find("calculator") !=
+                std::string::npos,
+            "/tools should list registered tools");
+    require(commands.process("/mcp").output.find("MCP servers") !=
+                std::string::npos,
+            "/mcp should expose MCP status");
+    require(commands.process("/context").output.find("context≈") !=
+                std::string::npos,
+            "/context should show the context budget");
+    require(commands.completions("/ski").front() == "/skills",
+            "command completion should complete /skills");
+    require(commands.completions("/skills sam").front() == "/skills sample",
+            "skill completion should include loaded skill names");
+    agent::RunResult run;
+    run.ok = true;
+    run.steps = 1;
+    run.usage = {10, 5, 15, 2, 1, true};
+    commands.record_run(run);
+    const auto usage = commands.process("/usage").output;
+    require(usage.find("input=10") != std::string::npos &&
+                usage.find("total=15") != std::string::npos,
+            "/usage should show provider-reported token counts");
+    context.append({agent::Role::User, "temporary", {}, {}, false});
+    require(commands.process("/clear").output.find("cleared") != std::string::npos &&
+                context.history().empty(),
+            "/clear should reset conversation context");
+    std::filesystem::remove_all(directory);
+}
+
+void test_configuration_loading_and_environment() {
+    const auto path = std::filesystem::temp_directory_path() /
+                      "cpp-agent-harness-config-test.json";
+    {
+        std::ofstream file(path);
+        file << R"({
+            "provider": "responses_api",
+            "trace": false,
+            "api": {
+                "base_url": "http://127.0.0.1:8080/v1/",
+                "model": "",
+                "api_key_env": "TEST_API_KEY",
+                "require_api_key": tru,
+                "timeout_ms": 2500,
+                "store": false
+            },
+            "context": {"max_estimated_tokens": 2048},
+            "loop": {"max_steps": 7}
+        })";
+    }
+
+    require_throws(
+        [&]() { (void)agent::ConfigLoader::load_file(path); },
+        "invalid JSON configuration should fail");
+
+    {
+        std::ofstream file(path);
+        file << R"({
+            "provider": "responses_api",
+            "trace": false,
+            "api": {
+                "base_url": "http://127.0.0.1:8080/v1/",
+                "model": "",
+                "api_key_env": "TEST_API_KEY",
+                "require_api_key": true,
+                "timeout_ms": 2500,
+                "store": false
+            },
+            "context": {"max_estimated_tokens": 2048},
+            "loop": {"max_steps": 7}
+        })";
+    }
+
+    auto config = agent::ConfigLoader::load_file(path);
+    const std::map<std::string, std::string> environment{
+        {"CPP_AGENT_MODEL", "environment-model"},
+        {"CPP_AGENT_API_STREAM", "false"},
+        {"CPP_AGENT_TRACE", "true"},
+        {"TEST_API_KEY", "test-secret"},
+    };
+    const auto reader = [&environment](const std::string& name)
+        -> std::optional<std::string> {
+        const auto value = environment.find(name);
+        if (value == environment.end()) {
+            return std::nullopt;
+        }
+        return value->second;
+    };
+    agent::ConfigLoader::apply_environment(config, reader);
+
+    require(config.provider == agent::ProviderKind::ResponsesApi,
+            "provider should load from file");
+    require(config.api.model == "environment-model",
+            "environment should override model from file");
+    require(config.trace, "environment should override trace");
+    require(!config.api.stream, "environment should override streaming mode");
+    require(config.context.max_estimated_tokens == 2048,
+            "context configuration should load");
+    require(config.loop.max_steps == 7, "loop configuration should load");
+    require(agent::ConfigLoader::resolve_api_key(config, reader) == "test-secret",
+            "API key should resolve through the configured environment name");
+    require(agent::ConfigLoader::responses_endpoint(config.api) ==
+                "http://127.0.0.1:8080/v1/responses",
+            "Responses endpoint should normalize its slash");
+
+    const auto saved_path = std::filesystem::temp_directory_path() /
+                            "cpp-agent-harness-saved-config.json";
+    agent::ConfigLoader::save_file(config, saved_path);
+    const auto saved = agent::ConfigLoader::load_file(saved_path);
+    require(saved.api.model == "environment-model",
+            "saved configuration should be loadable");
+    std::ifstream saved_file(saved_path);
+    const auto saved_json = agent::Json::parse(saved_file);
+    require(!saved_json["api"].contains("api_key"),
+            "saved configuration must not contain an API key");
+
+    std::filesystem::remove(path);
+    std::filesystem::remove(saved_path);
+}
+
+void test_local_configuration_is_reserved() {
+    agent::AppConfig config;
+    config.provider = agent::ProviderKind::Local;
+    config.local.protocol = "future-protocol";
+    config.local.options = {{"arbitrary", 42}};
+    agent::ConfigLoader::validate(config);
+    require(config.local.options["arbitrary"] == 42,
+            "local provider should preserve protocol-specific options");
+}
+
+void test_responses_model_without_api_key() {
+    FakeHttpTransport transport;
+    transport.response = {
+        200,
+        {},
+        R"({"id":"resp_local","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"local ok"}]}]})",
+    };
+    agent::openai::ResponsesConfig config;
+    config.endpoint = "http://127.0.0.1:8080/v1/responses";
+    config.model = "local-model";
+    config.require_api_key = false;
+    config.stream = false;
+    agent::openai::ResponsesModel model(transport, config);
+
+    agent::ModelRequest request;
+    request.messages.push_back({agent::Role::User, "hello", {}, {}, false});
+    const auto response = model.generate(request);
+    require(response.text == "local ok", "keyless local API should return text");
+    require(!transport.last_request.headers.contains("Authorization"),
+            "keyless local API should not send authorization");
+}
+
+void test_curl_transport_rejects_header_injection() {
+    agent::CurlCliTransport transport;
+    agent::HttpRequest request;
+    request.url = "http://127.0.0.1:1/v1/responses";
+    request.headers["Authorization"] = "Bearer safe\r\nInjected: value";
+    require_throws(
+        [&]() { (void)transport.send(request); },
+        "HTTP transport should reject CRLF header injection before execution");
+}
+
 }  // namespace
 
 int main() {
@@ -228,8 +516,15 @@ int main() {
         test_skill_registry();
         test_responses_request_codec();
         test_responses_model_with_fake_transport();
+        test_responses_request_handles_utf8_input();
         test_sse_parser_across_chunks();
         test_streamed_function_call_assembly();
+        test_responses_model_streams_text_deltas();
+        test_cli_commands();
+        test_configuration_loading_and_environment();
+        test_local_configuration_is_reserved();
+        test_responses_model_without_api_key();
+        test_curl_transport_rejects_header_injection();
         std::cout << "All tests passed\n";
         return 0;
     } catch (const std::exception& error) {

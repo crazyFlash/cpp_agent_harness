@@ -5,4 +5,4 @@ compile_commands.json
 *.a
 cpp-agent
 agent-tests
-
+config/*.local.json

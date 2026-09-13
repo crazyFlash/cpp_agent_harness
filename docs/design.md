@@ -805,8 +805,8 @@ M0 为减少样板代码暂时采用较浅目录；模块增长时按上述结�
 | Tool Registry | M1 进行中 | 已迁移 JSON 参数与 Schema，完整校验待实现 |
 | Calculator Tool | 可运行 | 用于验证最小闭环 |
 | Skill Registry | M0 可运行 | 扫描 frontmatter，尚未注入 Loop |
-| CLI / Trace | M0 可运行 | Fake Model 交互演示 |
-| OpenAI Model | M1 进行中 | Responses Codec、SSE 和 Fake Transport 已实现；真实 HTTP Transport 待实现 |
+| CLI / Trace | M1 可运行 | 启动配置发现、交互向导、显式 Demo 和事件 Trace |
+| OpenAI Model | M1 可运行 | Responses Codec、SSE、配置和真实 HTTP Transport 已实现 |
 | 文件与命令工具 | 未实现 | M2 |
 | 结构化压缩 | 未实现 | M3 |
 | Skill 激活 | 未实现 | M4 |

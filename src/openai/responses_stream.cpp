@@ -6,6 +6,14 @@
 
 namespace agent::openai {
 
+namespace {
+
+std::string dump_json_utf8_safe(const Json& value) {
+    return value.dump(-1, ' ', false, Json::error_handler_t::replace);
+}
+
+}  // namespace
+
 ResponsesStreamAssembler::PendingCall& ResponsesStreamAssembler::pending_call(
     const std::string& item_id) {
     const auto existing = call_indices_.find(item_id);
@@ -32,9 +40,9 @@ void ResponsesStreamAssembler::consume_item(const Json& item) {
     call.arguments = item.value("arguments", call.arguments);
 }
 
-void ResponsesStreamAssembler::consume(const SseEvent& event) {
+std::string ResponsesStreamAssembler::consume(const SseEvent& event) {
     if (event.data.empty() || event.data == "[DONE]") {
-        return;
+        return {};
     }
 
     Json payload;
@@ -47,7 +55,9 @@ void ResponsesStreamAssembler::consume(const SseEvent& event) {
 
     const auto type = payload.value("type", event.event);
     if (type == "response.output_text.delta") {
-        text_ += payload.value("delta", std::string{});
+        auto delta = payload.value("delta", std::string{});
+        text_ += delta;
+        return delta;
     } else if (type == "response.output_item.added" ||
                type == "response.output_item.done") {
         if (payload.contains("item")) {
@@ -78,8 +88,11 @@ void ResponsesStreamAssembler::consume(const SseEvent& event) {
         saw_terminal_response_ = true;
         completed_ = true;
     } else if (type == "response.failed" || type == "error") {
-        throw std::runtime_error("Responses API stream reported failure: " + payload.dump());
+        throw std::runtime_error(
+            "Responses API stream reported failure: " +
+            dump_json_utf8_safe(payload));
     }
+    return {};
 }
 
 ModelResponse ResponsesStreamAssembler::result() const {

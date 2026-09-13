@@ -1,0 +1,29 @@
+{
+  "provider": "demo",
+  "trace": false,
+  "skills_directory": "skills",
+  "api": {
+    "base_url": "https://api.openai.com/v1",
+    "model": "your-model-id",
+    "api_key_env": "OPENAI_API_KEY",
+    "require_api_key": true,
+    "timeout_ms": 60000,
+    "store": false,
+    "stream": true
+  },
+  "local": {
+    "protocol": "reserved",
+    "endpoint": "",
+    "model": "",
+    "options": {}
+  },
+  "context": {
+    "max_estimated_tokens": 4096,
+    "compact_at_ratio": 0.7,
+    "keep_recent_messages": 6
+  },
+  "loop": {
+    "max_steps": 16,
+    "max_consecutive_tool_errors": 3
+  }
+}

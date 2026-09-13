@@ -1,4 +1,6 @@
 #include "agent/openai/responses_model.hpp"
+#include "agent/openai/responses_stream.hpp"
+#include "agent/openai/sse_parser.hpp"
 
 #include <sstream>
 #include <stdexcept>
@@ -7,6 +9,10 @@
 namespace agent::openai {
 
 namespace {
+
+std::string dump_json_utf8_safe(const Json& value) {
+    return value.dump(-1, ' ', false, Json::error_handler_t::replace);
+}
 
 void append_instruction(std::ostringstream& output, const Message& message) {
     if (output.tellp() > 0) {
@@ -56,6 +62,16 @@ ToolCall decode_function_call(const Json& item) {
     return call;
 }
 
+std::size_t usage_value(const Json& object, const char* field) {
+    if (!object.contains(field) ||
+        (!object[field].is_number_unsigned() &&
+         !object[field].is_number_integer())) {
+        return 0;
+    }
+    const auto value = object[field].get<long long>();
+    return value > 0 ? static_cast<std::size_t>(value) : 0;
+}
+
 }  // namespace
 
 Json ResponsesCodec::encode_request(const ModelRequest& request,
@@ -89,7 +105,7 @@ Json ResponsesCodec::encode_request(const ModelRequest& request,
                     {"type", "function_call"},
                     {"call_id", call.id},
                     {"name", call.name},
-                    {"arguments", call.arguments.dump()},
+                    {"arguments", dump_json_utf8_safe(call.arguments)},
                 });
             }
             continue;
@@ -124,12 +140,31 @@ ModelResponse ResponsesCodec::decode_response(const Json& response) {
     }
     if (response.contains("error") && !response["error"].is_null()) {
         const auto& error = response["error"];
-        throw std::runtime_error(
-            "Responses API error: " + error.value("message", error.dump()));
+        const auto detail = error.contains("message") && error["message"].is_string()
+            ? error["message"].get<std::string>()
+            : dump_json_utf8_safe(error);
+        throw std::runtime_error("Responses API error: " + detail);
     }
 
     ModelResponse result;
     result.response_id = response.value("id", std::string{});
+    if (response.contains("usage") && response["usage"].is_object()) {
+        const auto& usage = response["usage"];
+        result.usage.input_tokens = usage_value(usage, "input_tokens");
+        result.usage.output_tokens = usage_value(usage, "output_tokens");
+        result.usage.total_tokens = usage_value(usage, "total_tokens");
+        if (usage.contains("input_tokens_details") &&
+            usage["input_tokens_details"].is_object()) {
+            result.usage.cached_tokens = usage_value(
+                usage["input_tokens_details"], "cached_tokens");
+        }
+        if (usage.contains("output_tokens_details") &&
+            usage["output_tokens_details"].is_object()) {
+            result.usage.reasoning_tokens = usage_value(
+                usage["output_tokens_details"], "reasoning_tokens");
+        }
+        result.usage.reported = true;
+    }
 
     const auto output = response.value("output", Json::array());
     if (!output.is_array()) {
@@ -163,25 +198,73 @@ ModelResponse ResponsesCodec::decode_response(const Json& response) {
 ResponsesModel::ResponsesModel(IHttpTransport& transport, ResponsesConfig config)
     : transport_(transport), config_(std::move(config)) {}
 
-ModelResponse ResponsesModel::generate(const ModelRequest& request) {
-    if (config_.api_key.empty()) {
+ModelResponse ResponsesModel::generate(const ModelRequest& request,
+                                       const TextDeltaCallback& on_text_delta) {
+    if (config_.require_api_key && config_.api_key.empty()) {
         throw std::invalid_argument("Responses API key cannot be empty");
     }
 
-    const auto body = ResponsesCodec::encode_request(request, config_);
+    const auto body = ResponsesCodec::encode_request(request, config_, config_.stream);
     HttpRequest http_request;
     http_request.url = config_.endpoint;
-    http_request.headers = {
-        {"Authorization", "Bearer " + config_.api_key},
-        {"Content-Type", "application/json"},
-    };
-    http_request.body = body.dump();
+    http_request.headers = {{"Content-Type", "application/json"}};
+    if (config_.stream) {
+        http_request.headers["Accept"] = "text/event-stream";
+    }
+    if (!config_.api_key.empty()) {
+        http_request.headers["Authorization"] = "Bearer " + config_.api_key;
+    }
+    http_request.body = dump_json_utf8_safe(body);
     http_request.timeout = config_.timeout;
+
+    if (config_.stream) {
+        SseParser parser;
+        ResponsesStreamAssembler assembler;
+        std::string response_body;
+        const auto response = transport_.send_stream(
+            http_request,
+            [&](std::string_view chunk) {
+                if (response_body.size() < 1000) {
+                    response_body.append(
+                        chunk.substr(0, 1000 - response_body.size()));
+                }
+                for (const auto& event : parser.feed(chunk)) {
+                    const auto delta = assembler.consume(event);
+                    if (on_text_delta && !delta.empty()) {
+                        on_text_delta(delta);
+                    }
+                }
+            });
+        for (const auto& event : parser.finish()) {
+            const auto delta = assembler.consume(event);
+            if (on_text_delta && !delta.empty()) {
+                on_text_delta(delta);
+            }
+        }
+        if (response.status_code < 200 || response.status_code >= 300) {
+            throw std::runtime_error(
+                "Responses API HTTP status " +
+                std::to_string(response.status_code) +
+                (response_body.empty() ? std::string{} : ": " + response_body));
+        }
+        if (!assembler.completed()) {
+            throw std::runtime_error(
+                "Responses API stream ended before response.completed");
+        }
+        return assembler.result();
+    }
 
     const auto response = transport_.send(http_request);
     if (response.status_code < 200 || response.status_code >= 300) {
+        std::string detail = response.body;
+        constexpr std::size_t max_detail = 1000;
+        if (detail.size() > max_detail) {
+            detail.resize(max_detail);
+            detail += "...";
+        }
         throw std::runtime_error(
-            "Responses API HTTP status " + std::to_string(response.status_code));
+            "Responses API HTTP status " + std::to_string(response.status_code) +
+            (detail.empty() ? std::string{} : ": " + detail));
     }
 
     try {

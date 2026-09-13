@@ -11,7 +11,7 @@ namespace agent::openai {
 
 class ResponsesStreamAssembler {
 public:
-    void consume(const SseEvent& event);
+    std::string consume(const SseEvent& event);
     ModelResponse result() const;
     bool completed() const;
 

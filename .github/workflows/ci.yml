@@ -10,9 +10,5 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build tests
-        run: make agent-tests
-      - name: Run tests
-        run: ./agent-tests
-      - name: Build CLI
-        run: make cpp-agent
+      - name: Build and test
+        run: make test
