@@ -10,6 +10,10 @@ namespace agent::openai {
 
 namespace {
 
+std::string dump_json_utf8_safe(const Json& value) {
+    return value.dump(-1, ' ', false, Json::error_handler_t::replace);
+}
+
 void append_instruction(std::ostringstream& output, const Message& message) {
     if (output.tellp() > 0) {
         output << "\n\n";
@@ -91,7 +95,7 @@ Json ResponsesCodec::encode_request(const ModelRequest& request,
                     {"type", "function_call"},
                     {"call_id", call.id},
                     {"name", call.name},
-                    {"arguments", call.arguments.dump()},
+                    {"arguments", dump_json_utf8_safe(call.arguments)},
                 });
             }
             continue;
@@ -126,8 +130,10 @@ ModelResponse ResponsesCodec::decode_response(const Json& response) {
     }
     if (response.contains("error") && !response["error"].is_null()) {
         const auto& error = response["error"];
-        throw std::runtime_error(
-            "Responses API error: " + error.value("message", error.dump()));
+        const auto detail = error.contains("message") && error["message"].is_string()
+            ? error["message"].get<std::string>()
+            : dump_json_utf8_safe(error);
+        throw std::runtime_error("Responses API error: " + detail);
     }
 
     ModelResponse result;
@@ -181,7 +187,7 @@ ModelResponse ResponsesModel::generate(const ModelRequest& request,
     if (!config_.api_key.empty()) {
         http_request.headers["Authorization"] = "Bearer " + config_.api_key;
     }
-    http_request.body = body.dump();
+    http_request.body = dump_json_utf8_safe(body);
     http_request.timeout = config_.timeout;
 
     if (config_.stream) {

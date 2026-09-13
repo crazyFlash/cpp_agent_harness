@@ -195,6 +195,40 @@ void test_responses_model_with_fake_transport() {
             "transport request should carry bearer auth");
 }
 
+void test_responses_request_handles_utf8_input() {
+    FakeHttpTransport transport;
+    transport.response = {
+        200,
+        {},
+        R"({"id":"resp_utf8","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]})",
+    };
+    agent::openai::ResponsesConfig config;
+    config.endpoint = "https://example.test/v1/responses";
+    config.api_key = "test-key";
+    config.model = "test-model";
+    config.stream = false;
+    agent::openai::ResponsesModel model(transport, config);
+
+    agent::ModelRequest valid_request;
+    valid_request.messages.push_back(
+        {agent::Role::User, "介绍一下自己", {}, {}, false});
+    require(model.generate(valid_request).text == "ok",
+            "valid Chinese UTF-8 input should be serialized");
+    const auto valid_body = agent::Json::parse(transport.last_request.body);
+    require(valid_body["input"][0]["content"] == "介绍一下自己",
+            "valid Chinese input should remain unchanged");
+
+    std::string incomplete_utf8 = "text";
+    incomplete_utf8.push_back(static_cast<char>(0xE5));
+    agent::ModelRequest incomplete_request;
+    incomplete_request.messages.push_back(
+        {agent::Role::User, incomplete_utf8, {}, {}, false});
+    require(model.generate(incomplete_request).text == "ok",
+            "incomplete terminal UTF-8 should not abort the model request");
+    require(transport.last_request.body.find("\xEF\xBF\xBD") != std::string::npos,
+            "invalid UTF-8 should be replaced with the Unicode replacement character");
+}
+
 void test_sse_parser_across_chunks() {
     agent::openai::SseParser parser;
     std::vector<agent::openai::SseEvent> events;
@@ -439,6 +473,7 @@ int main() {
         test_skill_registry();
         test_responses_request_codec();
         test_responses_model_with_fake_transport();
+        test_responses_request_handles_utf8_input();
         test_sse_parser_across_chunks();
         test_streamed_function_call_assembly();
         test_responses_model_streams_text_deltas();

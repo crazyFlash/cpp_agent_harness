@@ -6,6 +6,14 @@
 
 namespace agent::openai {
 
+namespace {
+
+std::string dump_json_utf8_safe(const Json& value) {
+    return value.dump(-1, ' ', false, Json::error_handler_t::replace);
+}
+
+}  // namespace
+
 ResponsesStreamAssembler::PendingCall& ResponsesStreamAssembler::pending_call(
     const std::string& item_id) {
     const auto existing = call_indices_.find(item_id);
@@ -80,7 +88,9 @@ std::string ResponsesStreamAssembler::consume(const SseEvent& event) {
         saw_terminal_response_ = true;
         completed_ = true;
     } else if (type == "response.failed" || type == "error") {
-        throw std::runtime_error("Responses API stream reported failure: " + payload.dump());
+        throw std::runtime_error(
+            "Responses API stream reported failure: " +
+            dump_json_utf8_safe(payload));
     }
     return {};
 }

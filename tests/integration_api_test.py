@@ -40,7 +40,7 @@ class FakeResponsesHandler(http.server.BaseHTTPRequestHandler):
                     {
                         "type": "message",
                         "content": [
-                            {"type": "output_text", "text": "integration response"}
+                            {"type": "output_text", "text": "integration 响应"}
                         ],
                     }
                 ],
@@ -49,19 +49,31 @@ class FakeResponsesHandler(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
-            for delta in ["integration ", "response"]:
+            for delta in ["integration ", "响应"]:
                 event = {
                     "type": "response.output_text.delta",
                     "delta": delta,
                 }
-                self.wfile.write(
-                    f"event: response.output_text.delta\ndata: {json.dumps(event)}\n\n".encode()
+                encoded_event = (
+                    "event: response.output_text.delta\n"
+                    f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                ).encode()
+                split = encoded_event.find("响".encode())
+                chunks = (
+                    [encoded_event[: split + 1], encoded_event[split + 1 :]]
+                    if split >= 0
+                    else [encoded_event]
                 )
-                self.wfile.flush()
+                for chunk in chunks:
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
                 time.sleep(0.03)
             completed = {"type": "response.completed", "response": response}
             self.wfile.write(
-                f"event: response.completed\ndata: {json.dumps(completed)}\n\n".encode()
+                (
+                    "event: response.completed\n"
+                    f"data: {json.dumps(completed, ensure_ascii=False)}\n\n"
+                ).encode()
             )
             self.wfile.flush()
         except Exception as error:  # surfaced in the parent thread below
@@ -120,11 +132,11 @@ def main():
                 )
             if "provider=responses_api" not in process.stdout:
                 raise AssertionError("CLI did not select the configured provider")
-            if "assistant: integration response" not in process.stdout:
+            if "assistant: integration 响应" not in process.stdout:
                 raise AssertionError(
                     f"CLI did not print the API response: {process.stdout}"
                 )
-            if process.stdout.count("assistant: integration response") != 1:
+            if process.stdout.count("assistant: integration 响应") != 1:
                 raise AssertionError("streamed output was printed more than once")
             if FakeResponsesHandler.request_error is not None:
                 raise FakeResponsesHandler.request_error
@@ -163,7 +175,7 @@ def main():
                     f"default config startup exited {process.returncode}: "
                     f"{process.stderr}"
                 )
-            if "assistant: integration response" not in process.stdout:
+            if "assistant: integration 响应" not in process.stdout:
                 raise AssertionError("default configuration was not auto-loaded")
 
         with tempfile.TemporaryDirectory(prefix="cpp-agent-wizard-") as directory:
@@ -195,7 +207,7 @@ def main():
                 )
             if "No API configuration was found." not in process.stdout:
                 raise AssertionError("setup wizard did not run")
-            if "assistant: integration response" not in process.stdout:
+            if "assistant: integration 响应" not in process.stdout:
                 raise AssertionError("wizard settings were not used for startup")
     finally:
         server.shutdown()
