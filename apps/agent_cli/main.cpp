@@ -2,6 +2,7 @@
 #include "agent/cli_commands.hpp"
 #include "agent/config.hpp"
 #include "agent/curl_cli_transport.hpp"
+#include "agent/line_editor.hpp"
 #include "agent/openai/responses_model.hpp"
 #include "agent/skill_registry.hpp"
 #include "agent/tools/calculator_tool.hpp"
@@ -9,6 +10,7 @@
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -29,16 +31,16 @@ public:
         const TextDeltaCallback& = {}) override {
         const auto& messages = request.messages;
         if (messages.empty()) {
-            return {"No input was provided.", {}, true, {}};
+            return {"No input was provided.", {}, true, {}, {}};
         }
 
         const auto& last = messages.back();
         if (last.role == agent::Role::Tool) {
-            return {"The tool returned: " + last.content, {}, true, {}};
+            return {"The tool returned: " + last.content, {}, true, {}, {}};
         }
 
         if (last.role != agent::Role::User) {
-            return {"Waiting for user input.", {}, true, {}};
+            return {"Waiting for user input.", {}, true, {}, {}};
         }
 
         constexpr std::string_view prefix = "calc ";
@@ -47,7 +49,7 @@ public:
             call.id = "demo-call-1";
             call.name = "calculator";
             call.arguments = {{"expression", last.content.substr(prefix.size())}};
-            return {"I'll calculate that.", {std::move(call)}, false, {}};
+            return {"I'll calculate that.", {std::move(call)}, false, {}, {}};
         }
 
         return {
@@ -55,6 +57,7 @@ public:
                 "\nTip: enter `calc 21 * 2` to exercise the agent tool loop.",
             {},
             true,
+            {},
             {},
         };
     }
@@ -135,6 +138,35 @@ void print_help(const char* executable) {
         << "  -h, --help      Show this help.\n\n"
         << "CPP_AGENT_CONFIG can provide the default configuration path.\n"
         << "Without configuration, an interactive terminal starts API setup.\n";
+}
+
+void print_turn_status(const agent::RunResult& result,
+                       const agent::ContextManager& context) {
+    const auto stats = context.stats();
+    const auto percent = stats.max_estimated_tokens == 0
+        ? 0.0
+        : 100.0 * static_cast<double>(stats.estimated_tokens) /
+              static_cast<double>(stats.max_estimated_tokens);
+    std::cout << "[turn] ";
+    if (result.usage.reported) {
+        std::cout << "tokens input=" << result.usage.input_tokens
+                  << " output=" << result.usage.output_tokens
+                  << " total=" << result.usage.total_tokens;
+        if (result.usage.cached_tokens != 0) {
+            std::cout << " cached=" << result.usage.cached_tokens;
+        }
+        if (result.usage.reasoning_tokens != 0) {
+            std::cout << " reasoning=" << result.usage.reasoning_tokens;
+        }
+    } else {
+        std::cout << "tokens=n/a";
+    }
+    std::cout << " | context≈" << stats.estimated_tokens << '/'
+              << stats.max_estimated_tokens << " (" << std::fixed
+              << std::setprecision(1) << percent << "%)"
+              << " messages=" << stats.history_messages
+              << " summary=" << (stats.has_summary ? "yes" : "no")
+              << " | steps=" << result.steps << '\n';
 }
 
 bool stdin_is_interactive() {
@@ -364,15 +396,17 @@ int main(int argc, char** argv) {
                 *transport, std::move(responses));
         };
         rebuild_model();
-        agent::CliCommandProcessor commands(config, skills);
+        agent::CliCommandProcessor commands(config, skills, tools, context);
+        agent::LineEditor editor(
+            [&](std::string_view input) { return commands.completions(input); });
 
         std::cout << "cpp_agent_harness (provider="
                   << agent::ConfigLoader::provider_name(config.provider) << ", "
                   << skill_count << " skill(s) loaded)\n"
                   << "Type /help for commands, /quit to exit.\n";
 
-        std::string input;
-        while (std::cout << "> " && std::getline(std::cin, input)) {
+        while (const auto next_input = editor.read_line("> ")) {
+            const auto& input = *next_input;
             if (input == "quit" || input == "exit") break;
             const auto command = commands.process(input);
             if (command.handled) {
@@ -413,6 +447,8 @@ int main(int argc, char** argv) {
             } else if (!streamed) {
                 std::cout << "assistant: " << result.output << '\n';
             }
+            commands.record_run(result);
+            print_turn_status(result, context);
         }
         return 0;
     } catch (const std::exception& error) {

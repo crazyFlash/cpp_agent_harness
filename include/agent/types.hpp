@@ -39,11 +39,31 @@ struct Message {
     bool pinned{false};
 };
 
+struct TokenUsage {
+    std::size_t input_tokens{0};
+    std::size_t output_tokens{0};
+    std::size_t total_tokens{0};
+    std::size_t cached_tokens{0};
+    std::size_t reasoning_tokens{0};
+    bool reported{false};
+
+    TokenUsage& operator+=(const TokenUsage& other) {
+        input_tokens += other.input_tokens;
+        output_tokens += other.output_tokens;
+        total_tokens += other.total_tokens;
+        cached_tokens += other.cached_tokens;
+        reasoning_tokens += other.reasoning_tokens;
+        reported = reported || other.reported;
+        return *this;
+    }
+};
+
 struct ModelResponse {
     std::string text;
     std::vector<ToolCall> tool_calls;
     bool final{true};
     std::string response_id;
+    TokenUsage usage;
 };
 
 struct ModelRequest {

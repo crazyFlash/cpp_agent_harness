@@ -68,10 +68,20 @@ Try a normal message or exercise the tool loop:
 assistant: The tool returned: 42
 ```
 
-Responses API output is streamed to the terminal by default. Built-in commands
-are handled locally; use `/help`, `/model`, `/skills`, `/config`, or `/quit`.
-`/model MODEL_ID` switches the model for the current session without rewriting
-the configuration file.
+Responses API output is streamed to the terminal by default. Interactive input
+supports Tab completion, command/skill/tool completion, command history, and
+UTF-8-aware backspace. Use `/help` to discover commands such as `/status`,
+`/model`, `/tools`, `/skills`, `/mcp`, `/context`, `/usage`, `/compact`, and
+`/clear`. `/model MODEL_ID` switches the model for the current session without
+rewriting the configuration file.
+
+Every completed turn prints provider-reported token usage and the local context
+budget. Context tokens are marked with `≈` because M0 uses the deterministic
+character-count estimator rather than a model-specific tokenizer:
+
+```text
+[turn] tokens input=37 output=11 total=48 | context≈180/4096 (4.4%) messages=2 summary=no | steps=1
+```
 
 Use `./cpp-agent --demo --trace` to print loop and tool events in Demo mode.
 

@@ -41,12 +41,13 @@ public:
         const TextDeltaCallback& = {}) override {
         const auto& messages = request.messages;
         if (messages.back().role == agent::Role::Tool) {
-            return {"answer=" + messages.back().content, {}, true, {}};
+            return {"answer=" + messages.back().content, {}, true, {}, {}};
         }
         return {
             "using calculator",
             {{"call-1", "calculator", agent::Json{{"expression", "21 * 2"}}}},
             false,
+            {},
             {},
         };
     }
@@ -86,6 +87,8 @@ void test_context_compaction() {
     }
 
     require(context.maybe_compact(), "context should compact over its budget");
+    require(context.stats().compaction_count == 1,
+            "context stats should count compactions");
     require(context.history().size() == 2, "recent messages should be retained");
     require(context.summary().find("number 0") != std::string::npos,
             "summary should include older messages");
@@ -163,6 +166,12 @@ void test_responses_model_with_fake_transport() {
         agent::Json{
             {"id", "resp_123"},
             {"status", "completed"},
+            {"usage",
+             {{"input_tokens", 12},
+              {"output_tokens", 7},
+              {"total_tokens", 19},
+              {"input_tokens_details", {{"cached_tokens", 3}}},
+              {"output_tokens_details", {{"reasoning_tokens", 2}}}}},
             {"output",
              agent::Json::array({
                  {{"type", "function_call"},
@@ -191,6 +200,11 @@ void test_responses_model_with_fake_transport() {
     require(response.tool_calls[0].id == "call_123", "call_id should be used for output");
     require(response.tool_calls[0].arguments["expression"] == "8 * 9",
             "function arguments should decode as JSON");
+    require(response.usage.reported && response.usage.total_tokens == 19,
+            "Responses API usage should be retained");
+    require(response.usage.cached_tokens == 3 &&
+                response.usage.reasoning_tokens == 2,
+            "detailed token usage should be retained");
     require(transport.last_request.headers.at("Authorization") == "Bearer test-key",
             "transport request should carry bearer auth");
 }
@@ -313,7 +327,10 @@ void test_cli_commands() {
     config.provider = agent::ProviderKind::ResponsesApi;
     config.api.model = "old-model";
     config.api.api_key_env = "SECRET_ENV";
-    agent::CliCommandProcessor commands(config, skills);
+    agent::ToolRegistry tools;
+    tools.add(std::make_unique<agent::CalculatorTool>());
+    agent::ContextManager context;
+    agent::CliCommandProcessor commands(config, skills, tools, context);
 
     require(!commands.process("hello").handled,
             "ordinary input should not be treated as a command");
@@ -328,6 +345,32 @@ void test_cli_commands() {
     require(commands.process("/config").output.find("SECRET_ENV") !=
                 std::string::npos,
             "/config should show the key environment name");
+    require(commands.process("/tools").output.find("calculator") !=
+                std::string::npos,
+            "/tools should list registered tools");
+    require(commands.process("/mcp").output.find("MCP servers") !=
+                std::string::npos,
+            "/mcp should expose MCP status");
+    require(commands.process("/context").output.find("context≈") !=
+                std::string::npos,
+            "/context should show the context budget");
+    require(commands.completions("/ski").front() == "/skills",
+            "command completion should complete /skills");
+    require(commands.completions("/skills sam").front() == "/skills sample",
+            "skill completion should include loaded skill names");
+    agent::RunResult run;
+    run.ok = true;
+    run.steps = 1;
+    run.usage = {10, 5, 15, 2, 1, true};
+    commands.record_run(run);
+    const auto usage = commands.process("/usage").output;
+    require(usage.find("input=10") != std::string::npos &&
+                usage.find("total=15") != std::string::npos,
+            "/usage should show provider-reported token counts");
+    context.append({agent::Role::User, "temporary", {}, {}, false});
+    require(commands.process("/clear").output.find("cleared") != std::string::npos &&
+                context.history().empty(),
+            "/clear should reset conversation context");
     std::filesystem::remove_all(directory);
 }
 

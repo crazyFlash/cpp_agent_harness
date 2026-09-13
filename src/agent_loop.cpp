@@ -27,6 +27,7 @@ RunResult AgentLoop::run(std::string user_input) {
     emit(EventType::LoopStarted, 0);
 
     std::size_t consecutive_tool_errors = 0;
+    TokenUsage usage;
 
     for (std::size_t step = 1; step <= config_.max_steps; ++step) {
         if (context_.maybe_compact()) {
@@ -41,11 +42,12 @@ RunResult AgentLoop::run(std::string user_input) {
                 [this, step](std::string_view delta) {
                     emit(EventType::ModelTextDelta, step, std::string{delta});
                 });
+            usage += response.usage;
             emit(EventType::ModelResponded, step, response.text);
         } catch (const std::exception& error) {
             const std::string reason = std::string{"model error: "} + error.what();
             emit(EventType::LoopFailed, step, reason);
-            return {false, reason, step};
+            return {false, reason, step, usage};
         }
 
         context_.append(Message{
@@ -54,12 +56,12 @@ RunResult AgentLoop::run(std::string user_input) {
         if (response.tool_calls.empty()) {
             if (response.final) {
                 emit(EventType::LoopFinished, step, response.text);
-                return {true, response.text, step};
+                return {true, response.text, step, usage};
             }
 
             const std::string reason = "model returned neither a final answer nor a tool call";
             emit(EventType::LoopFailed, step, reason);
-            return {false, reason, step};
+            return {false, reason, step, usage};
         }
 
         for (const auto& call : response.tool_calls) {
@@ -77,7 +79,7 @@ RunResult AgentLoop::run(std::string user_input) {
                 if (consecutive_tool_errors >= config_.max_consecutive_tool_errors) {
                     const std::string reason = "too many consecutive tool errors";
                     emit(EventType::LoopFailed, step, reason);
-                    return {false, reason, step};
+                    return {false, reason, step, usage};
                 }
             }
         }
@@ -85,7 +87,7 @@ RunResult AgentLoop::run(std::string user_input) {
 
     const std::string reason = "agent exceeded the maximum number of steps";
     emit(EventType::LoopFailed, config_.max_steps, reason);
-    return {false, reason, config_.max_steps};
+    return {false, reason, config_.max_steps, usage};
 }
 
 }  // namespace agent

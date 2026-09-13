@@ -62,6 +62,16 @@ ToolCall decode_function_call(const Json& item) {
     return call;
 }
 
+std::size_t usage_value(const Json& object, const char* field) {
+    if (!object.contains(field) ||
+        (!object[field].is_number_unsigned() &&
+         !object[field].is_number_integer())) {
+        return 0;
+    }
+    const auto value = object[field].get<long long>();
+    return value > 0 ? static_cast<std::size_t>(value) : 0;
+}
+
 }  // namespace
 
 Json ResponsesCodec::encode_request(const ModelRequest& request,
@@ -138,6 +148,23 @@ ModelResponse ResponsesCodec::decode_response(const Json& response) {
 
     ModelResponse result;
     result.response_id = response.value("id", std::string{});
+    if (response.contains("usage") && response["usage"].is_object()) {
+        const auto& usage = response["usage"];
+        result.usage.input_tokens = usage_value(usage, "input_tokens");
+        result.usage.output_tokens = usage_value(usage, "output_tokens");
+        result.usage.total_tokens = usage_value(usage, "total_tokens");
+        if (usage.contains("input_tokens_details") &&
+            usage["input_tokens_details"].is_object()) {
+            result.usage.cached_tokens = usage_value(
+                usage["input_tokens_details"], "cached_tokens");
+        }
+        if (usage.contains("output_tokens_details") &&
+            usage["output_tokens_details"].is_object()) {
+            result.usage.reasoning_tokens = usage_value(
+                usage["output_tokens_details"], "reasoning_tokens");
+        }
+        result.usage.reported = true;
+    }
 
     const auto output = response.value("output", Json::array());
     if (!output.is_array()) {

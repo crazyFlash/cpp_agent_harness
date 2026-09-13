@@ -57,6 +57,13 @@ bool ContextManager::maybe_compact() {
         return false;
     }
 
+    return compact_now();
+}
+
+bool ContextManager::compact_now() {
+    if (history_.size() <= config_.keep_recent_messages) {
+        return false;
+    }
     const std::size_t compact_count = history_.size() - config_.keep_recent_messages;
     std::vector<Message> compacted(history_.begin(), history_.begin() + compact_count);
 
@@ -67,7 +74,28 @@ bool ContextManager::maybe_compact() {
     next_summary += summarize(compacted);
     summary_ = std::move(next_summary);
     history_.erase(history_.begin(), history_.begin() + compact_count);
+    ++compaction_count_;
     return true;
+}
+
+void ContextManager::clear_history() {
+    history_.clear();
+    summary_.clear();
+    compaction_count_ = 0;
+}
+
+ContextStats ContextManager::stats() const {
+    return {
+        estimated_tokens(),
+        config_.max_estimated_tokens,
+        static_cast<std::size_t>(
+            static_cast<double>(config_.max_estimated_tokens) *
+            config_.compact_at_ratio),
+        history_.size(),
+        instructions_.size(),
+        compaction_count_,
+        !summary_.empty(),
+    };
 }
 
 const std::vector<Message>& ContextManager::history() const {
@@ -90,4 +118,3 @@ const std::string& ContextManager::summary() const {
 }
 
 }  // namespace agent
-

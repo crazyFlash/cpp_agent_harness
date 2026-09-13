@@ -12,6 +12,7 @@ add_library(agent_harness
     src/config.cpp
     src/context_manager.cpp
     src/curl_cli_transport.cpp
+    src/line_editor.cpp
     src/openai/responses_model.cpp
     src/openai/responses_stream.cpp
     src/openai/sse_parser.cpp
@@ -33,6 +34,13 @@ add_test(NAME agent-tests COMMAND agent-tests)
 
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
+    add_test(
+        NAME cli-pty-test
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_SOURCE_DIR}/tests/cli_pty_test.py
+            $<TARGET_FILE:cpp-agent>
+    )
     add_test(
         NAME api-integration-test
         COMMAND

@@ -36,6 +36,13 @@ class FakeResponsesHandler(http.server.BaseHTTPRequestHandler):
             response = {
                 "id": "resp_integration",
                 "status": "completed",
+                "usage": {
+                    "input_tokens": 11,
+                    "output_tokens": 4,
+                    "total_tokens": 15,
+                    "input_tokens_details": {"cached_tokens": 2},
+                    "output_tokens_details": {"reasoning_tokens": 1},
+                },
                 "output": [
                     {
                         "type": "message",
@@ -138,6 +145,10 @@ def main():
                 )
             if process.stdout.count("assistant: integration 响应") != 1:
                 raise AssertionError("streamed output was printed more than once")
+            if "[turn] tokens input=11 output=4 total=15" not in process.stdout:
+                raise AssertionError(
+                    f"CLI did not print token usage footer: {process.stdout}"
+                )
             if FakeResponsesHandler.request_error is not None:
                 raise FakeResponsesHandler.request_error
 

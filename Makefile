@@ -8,6 +8,7 @@ LIB_SOURCES := \
 	src/config.cpp \
 	src/context_manager.cpp \
 	src/curl_cli_transport.cpp \
+	src/line_editor.cpp \
 	src/openai/responses_model.cpp \
 	src/openai/responses_stream.cpp \
 	src/openai/sse_parser.cpp \
@@ -27,6 +28,7 @@ agent-tests: $(LIB_SOURCES) tests/agent_tests.cpp
 
 test: agent-tests cpp-agent
 	./agent-tests
+	python3 tests/cli_pty_test.py
 	python3 tests/integration_api_test.py
 
 integration-test: cpp-agent

@@ -148,16 +148,33 @@ Harness 会在 `base_url` 后补充 `/responses`。如果 `base_url` 已以 `/re
 
 ```text
 /help
-/model
-/model MODEL_ID
-/skills
-/skills SKILL_NAME
+/status
+/model [MODEL_ID]
+/tools [TOOL_NAME]
+/skills [SKILL_NAME]
+/mcp
+/context
+/usage
+/history
+/compact
+/clear
+/new
+/trace [on|off]
+/stream [on|off]
 /config
 /quit
 ```
 
 `/model MODEL_ID` 只修改当前进程中的 Responses API 模型，不会改写配置文件；
 `/config` 只显示脱敏配置，不显示 API Key。
+
+交互式终端支持 Tab 补全（指令、Skill 名称、Tool 名称和开关参数）、上下键历史、
+UTF-8 退格和 Ctrl-D/Ctrl-C 退出。`/mcp` 当前展示 MCP 状态入口；stdio MCP
+连接、工具发现和调用仍按设计文档的 M5 里程碑实现。
+
+每轮模型调用后会显示 API 返回的 input/output/total token，以及本地 context
+预算、消息数、摘要状态和 Loop steps。Context 数值带 `≈`，表示它来自当前
+`字符数 / 4` 的确定性估算，不冒充 Provider tokenizer 的精确值。
 
 ## 其他配置
 
