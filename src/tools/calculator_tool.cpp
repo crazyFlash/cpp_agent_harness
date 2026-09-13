@@ -10,17 +10,25 @@ ToolDefinition CalculatorTool::definition() const {
     return {
         "calculator",
         "Evaluate a binary arithmetic expression such as 21 * 2.",
-        {{"expression", "string: left operand, operator, and right operand"}},
+        {
+            {"type", "object"},
+            {"properties",
+             {{"expression",
+               {{"type", "string"},
+                {"description", "Left operand, operator, and right operand."}}}}},
+            {"required", {"expression"}},
+            {"additionalProperties", false},
+        },
     };
 }
 
 ToolResult CalculatorTool::execute(const ToolCall& call) {
-    const auto argument = call.arguments.find("expression");
-    if (argument == call.arguments.end()) {
+    if (!call.arguments.is_object() || !call.arguments.contains("expression") ||
+        !call.arguments["expression"].is_string()) {
         return {false, "missing required argument: expression"};
     }
 
-    std::istringstream input(argument->second);
+    std::istringstream input(call.arguments["expression"].get<std::string>());
     double left = 0.0;
     double right = 0.0;
     char operation = '\0';
@@ -49,4 +57,3 @@ ToolResult CalculatorTool::execute(const ToolCall& call) {
 }
 
 }  // namespace agent
-

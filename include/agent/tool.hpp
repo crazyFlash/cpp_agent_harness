@@ -2,18 +2,11 @@
 
 #include "agent/types.hpp"
 
-#include <map>
 #include <memory>
 #include <string>
 #include <vector>
 
 namespace agent {
-
-struct ToolDefinition {
-    std::string name;
-    std::string description;
-    std::map<std::string, std::string> parameters;
-};
 
 class ITool {
 public:
@@ -34,4 +27,3 @@ private:
 };
 
 }  // namespace agent
-

@@ -9,8 +9,7 @@ namespace agent {
 class IModel {
 public:
     virtual ~IModel() = default;
-    virtual ModelResponse generate(const std::vector<Message>& messages) = 0;
+    virtual ModelResponse generate(const ModelRequest& request) = 0;
 };
 
 }  // namespace agent
-

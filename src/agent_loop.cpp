@@ -36,7 +36,8 @@ RunResult AgentLoop::run(std::string user_input) {
         ModelResponse response;
         try {
             emit(EventType::ModelRequested, step);
-            response = model_.generate(context_.working_messages());
+            response = model_.generate(
+                ModelRequest{context_.working_messages(), tools_.definitions()});
             emit(EventType::ModelResponded, step, response.text);
         } catch (const std::exception& error) {
             const std::string reason = std::string{"model error: "} + error.what();
