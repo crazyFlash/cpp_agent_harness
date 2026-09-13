@@ -1,8 +1,10 @@
 #pragma once
 
 #include <chrono>
+#include <functional>
 #include <map>
 #include <string>
+#include <string_view>
 
 namespace agent {
 
@@ -22,8 +24,18 @@ struct HttpResponse {
 
 class IHttpTransport {
 public:
+    using BodyChunkCallback = std::function<void(std::string_view)>;
+
     virtual ~IHttpTransport() = default;
     virtual HttpResponse send(const HttpRequest& request) = 0;
+    virtual HttpResponse send_stream(const HttpRequest& request,
+                                     const BodyChunkCallback& on_chunk) {
+        auto response = send(request);
+        if (!response.body.empty()) {
+            on_chunk(response.body);
+        }
+        return response;
+    }
 };
 
 }  // namespace agent

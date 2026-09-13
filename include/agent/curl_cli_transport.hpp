@@ -16,6 +16,8 @@ class CurlCliTransport final : public IHttpTransport {
 public:
     explicit CurlCliTransport(CurlCliConfig config = {});
     HttpResponse send(const HttpRequest& request) override;
+    HttpResponse send_stream(const HttpRequest& request,
+                             const BodyChunkCallback& on_chunk) override;
 
 private:
     CurlCliConfig config_;

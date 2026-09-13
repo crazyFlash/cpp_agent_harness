@@ -59,6 +59,7 @@ struct ToolResult {
 enum class EventType {
     LoopStarted,
     ModelRequested,
+    ModelTextDelta,
     ModelResponded,
     ToolStarted,
     ToolFinished,

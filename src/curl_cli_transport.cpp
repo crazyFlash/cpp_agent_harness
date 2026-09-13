@@ -5,6 +5,8 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <exception>
+#include <functional>
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
@@ -214,6 +216,46 @@ int spawn_curl(const CurlCliConfig& config,
     }
     throw std::runtime_error("curl process ended in an unknown state");
 }
+
+int wait_for_process(pid_t process) {
+    int status = 0;
+    while (::waitpid(process, &status, 0) < 0) {
+        if (errno != EINTR) {
+            throw std::runtime_error(
+                "cannot wait for curl process: " + std::string{std::strerror(errno)});
+        }
+    }
+    if (WIFEXITED(status)) {
+        return WEXITSTATUS(status);
+    }
+    if (WIFSIGNALED(status)) {
+        throw std::runtime_error(
+            "curl process terminated by signal " + std::to_string(WTERMSIG(status)));
+    }
+    throw std::runtime_error("curl process ended in an unknown state");
+}
+
+int parse_last_http_status(std::string_view headers) {
+    int status = 0;
+    std::size_t position = 0;
+    while ((position = headers.find("HTTP/", position)) != std::string_view::npos) {
+        const auto space = headers.find(' ', position);
+        if (space != std::string_view::npos && space + 4 <= headers.size()) {
+            const auto digits = headers.substr(space + 1, 3);
+            if (digits[0] >= '0' && digits[0] <= '9' &&
+                digits[1] >= '0' && digits[1] <= '9' &&
+                digits[2] >= '0' && digits[2] <= '9') {
+                status = (digits[0] - '0') * 100 +
+                         (digits[1] - '0') * 10 + (digits[2] - '0');
+            }
+        }
+        position += 5;
+    }
+    if (status < 100 || status > 599) {
+        throw std::runtime_error("curl returned invalid HTTP response headers");
+    }
+    return status;
+}
 #endif
 
 }  // namespace
@@ -297,6 +339,134 @@ HttpResponse CurlCliTransport::send(const HttpRequest& request) {
         read_bounded_file(
             response_body, config_.max_response_bytes, "HTTP response body"),
     };
+#endif
+}
+
+HttpResponse CurlCliTransport::send_stream(
+    const HttpRequest& request,
+    const BodyChunkCallback& on_chunk) {
+#ifdef _WIN32
+    (void)request;
+    (void)on_chunk;
+    throw std::runtime_error("CurlCliTransport is not implemented on Windows");
+#else
+    if (!on_chunk) {
+        throw std::invalid_argument("stream callback cannot be empty");
+    }
+    if (request.url.empty() || request.timeout.count() <= 0) {
+        throw std::invalid_argument("HTTP stream request is invalid");
+    }
+    reject_line_breaks(request.method, "HTTP method");
+    reject_line_breaks(request.url, "HTTP URL");
+
+    TemporaryDirectory temporary;
+    const auto request_body = temporary.path() / "request-body";
+    const auto response_headers = temporary.path() / "response-headers";
+    const auto error_output = temporary.path() / "stderr";
+    const auto curl_config = temporary.path() / "curl.conf";
+    write_private_file(request_body, request.body);
+
+    std::ostringstream configuration;
+    configuration << "silent\nshow-error\nno-buffer\n"
+                  << "noproxy = \"localhost,127.0.0.1,::1\"\n"
+                  << "request = " << curl_config_quote(request.method) << '\n'
+                  << "url = " << curl_config_quote(request.url) << '\n';
+    for (const auto& [name, value] : request.headers) {
+        reject_line_breaks(name, "HTTP header name");
+        reject_line_breaks(value, "HTTP header value");
+        configuration << "header = "
+                      << curl_config_quote(name + ": " + value) << '\n';
+    }
+    configuration << "data-binary = "
+                  << curl_config_quote("@" + request_body.string()) << '\n'
+                  << "dump-header = " << curl_config_quote(response_headers.string())
+                  << '\n'
+                  << "max-time = \"" << std::fixed << std::setprecision(3)
+                  << static_cast<double>(request.timeout.count()) / 1000.0 << "\"\n";
+    write_private_file(curl_config, configuration.str());
+
+    int body_pipe[2];
+    if (::pipe(body_pipe) != 0) {
+        throw std::runtime_error(
+            "cannot create curl stream pipe: " + std::string{std::strerror(errno)});
+    }
+
+    posix_spawn_file_actions_t actions;
+    int result = ::posix_spawn_file_actions_init(&actions);
+    if (result == 0) result = ::posix_spawn_file_actions_addopen(
+        &actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
+    if (result == 0) result = ::posix_spawn_file_actions_adddup2(
+        &actions, body_pipe[1], STDOUT_FILENO);
+    if (result == 0) result = ::posix_spawn_file_actions_addclose(
+        &actions, body_pipe[0]);
+    if (result == 0) result = ::posix_spawn_file_actions_addclose(
+        &actions, body_pipe[1]);
+    if (result == 0) result = ::posix_spawn_file_actions_addopen(
+        &actions, STDERR_FILENO, error_output.c_str(),
+        O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (result != 0) {
+        ::posix_spawn_file_actions_destroy(&actions);
+        ::close(body_pipe[0]);
+        ::close(body_pipe[1]);
+        throw std::runtime_error(
+            "cannot configure curl stream process: " +
+            std::string{std::strerror(result)});
+    }
+
+    std::vector<std::string> argument_storage{
+        config_.executable, "--disable", "--config", curl_config.string()};
+    std::vector<char*> arguments;
+    for (auto& argument : argument_storage) arguments.push_back(argument.data());
+    arguments.push_back(nullptr);
+    pid_t process = 0;
+    result = ::posix_spawnp(&process, config_.executable.c_str(), &actions,
+                            nullptr, arguments.data(), environ);
+    ::posix_spawn_file_actions_destroy(&actions);
+    ::close(body_pipe[1]);
+    if (result != 0) {
+        ::close(body_pipe[0]);
+        throw std::runtime_error(
+            "cannot start curl executable '" + config_.executable + "': " +
+            std::string{std::strerror(result)});
+    }
+
+    std::size_t received = 0;
+    std::exception_ptr callback_error;
+    char buffer[4096];
+    while (true) {
+        const auto count = ::read(body_pipe[0], buffer, sizeof(buffer));
+        if (count == 0) break;
+        if (count < 0) {
+            if (errno == EINTR) continue;
+            callback_error = std::make_exception_ptr(std::runtime_error(
+                "cannot read curl stream: " + std::string{std::strerror(errno)}));
+            break;
+        }
+        received += static_cast<std::size_t>(count);
+        if (received > config_.max_response_bytes && !callback_error) {
+            callback_error = std::make_exception_ptr(
+                std::runtime_error("HTTP response body exceeds configured size limit"));
+        }
+        if (!callback_error) {
+            try {
+                on_chunk(std::string_view{buffer, static_cast<std::size_t>(count)});
+            } catch (...) {
+                callback_error = std::current_exception();
+            }
+        }
+    }
+    ::close(body_pipe[0]);
+    const int exit_code = wait_for_process(process);
+    const auto error_text = read_bounded_file(error_output, 64 * 1024, "curl stderr");
+    if (callback_error) std::rethrow_exception(callback_error);
+    if (exit_code != 0) {
+        throw std::runtime_error(
+            "curl failed with exit code " + std::to_string(exit_code) +
+            (error_text.empty() ? std::string{} : ": " + error_text));
+    }
+    const auto header_text = read_bounded_file(
+        response_headers, 256 * 1024, "HTTP response headers");
+    return {parse_last_http_status(header_text), {}, {}};
 #endif
 }
 

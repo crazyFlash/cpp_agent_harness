@@ -68,6 +68,11 @@ Try a normal message or exercise the tool loop:
 assistant: The tool returned: 42
 ```
 
+Responses API output is streamed to the terminal by default. Built-in commands
+are handled locally; use `/help`, `/model`, `/skills`, `/config`, or `/quit`.
+`/model MODEL_ID` switches the model for the current session without rewriting
+the configuration file.
+
 Use `./cpp-agent --demo --trace` to print loop and tool events in Demo mode.
 
 ## API configuration

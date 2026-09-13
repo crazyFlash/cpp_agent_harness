@@ -1,4 +1,5 @@
 #include "agent/agent_loop.hpp"
+#include "agent/cli_commands.hpp"
 #include "agent/config.hpp"
 #include "agent/curl_cli_transport.hpp"
 #include "agent/openai/responses_model.hpp"
@@ -23,7 +24,9 @@ namespace {
 
 class DemoModel final : public agent::IModel {
 public:
-    agent::ModelResponse generate(const agent::ModelRequest& request) override {
+    agent::ModelResponse generate(
+        const agent::ModelRequest& request,
+        const TextDeltaCallback& = {}) override {
         const auto& messages = request.messages;
         if (messages.empty()) {
             return {"No input was provided.", {}, true, {}};
@@ -61,6 +64,7 @@ const char* event_name(agent::EventType type) {
     switch (type) {
         case agent::EventType::LoopStarted: return "loop.started";
         case agent::EventType::ModelRequested: return "model.requested";
+        case agent::EventType::ModelTextDelta: return "model.text.delta";
         case agent::EventType::ModelResponded: return "model.responded";
         case agent::EventType::ToolStarted: return "tool.started";
         case agent::EventType::ToolFinished: return "tool.finished";
@@ -309,8 +313,8 @@ int main(int argc, char** argv) {
             print_help(argv[0]);
             return 0;
         }
-        const auto startup = load_config(options);
-        const auto& config = startup.config;
+        auto startup = load_config(options);
+        auto& config = startup.config;
         if (options.check_config) {
             std::cout << "configuration ok: provider="
                       << agent::ConfigLoader::provider_name(config.provider) << '\n';
@@ -330,10 +334,21 @@ int main(int argc, char** argv) {
 
         std::unique_ptr<agent::IHttpTransport> transport;
         std::unique_ptr<agent::IModel> model;
-        if (config.provider == agent::ProviderKind::Demo) {
-            model = std::make_unique<DemoModel>();
-        } else if (config.provider == agent::ProviderKind::ResponsesApi) {
+        if (config.provider == agent::ProviderKind::ResponsesApi) {
             transport = std::make_unique<agent::CurlCliTransport>();
+        } else if (config.provider == agent::ProviderKind::Local) {
+            std::cerr
+                << "error: local model protocol '" << config.local.protocol
+                << "' is reserved but not implemented; use responses_api for a "
+                   "Responses-compatible local server\n";
+            return 2;
+        }
+
+        const auto rebuild_model = [&]() {
+            if (config.provider == agent::ProviderKind::Demo) {
+                model = std::make_unique<DemoModel>();
+                return;
+            }
             agent::openai::ResponsesConfig responses;
             responses.endpoint = agent::ConfigLoader::responses_endpoint(config.api);
             responses.api_key = startup.transient_api_key
@@ -344,46 +359,60 @@ int main(int argc, char** argv) {
             responses.timeout = config.api.timeout;
             responses.store = config.api.store;
             responses.require_api_key = config.api.require_api_key;
+            responses.stream = config.api.stream;
             model = std::make_unique<agent::openai::ResponsesModel>(
                 *transport, std::move(responses));
-        } else {
-            std::cerr
-                << "error: local model protocol '" << config.local.protocol
-                << "' is reserved but not implemented; use responses_api for a "
-                   "Responses-compatible local server\n";
-            return 2;
-        }
-
-        const bool trace = config.trace;
-        agent::AgentLoop loop(
-            *model,
-            tools,
-            context,
-            config.loop,
-            [trace](const agent::AgentEvent& event) {
-                if (trace) {
-                    std::cerr << "[trace] " << event_name(event.type)
-                              << " step=" << event.step;
-                    if (!event.detail.empty()) {
-                        std::cerr << " detail=" << event.detail;
-                    }
-                    std::cerr << '\n';
-                }
-            });
+        };
+        rebuild_model();
+        agent::CliCommandProcessor commands(config, skills);
 
         std::cout << "cpp_agent_harness (provider="
                   << agent::ConfigLoader::provider_name(config.provider) << ", "
                   << skill_count << " skill(s) loaded)\n"
-                  << "Type 'quit' to exit.\n";
+                  << "Type /help for commands, /quit to exit.\n";
 
         std::string input;
         while (std::cout << "> " && std::getline(std::cin, input)) {
-            if (input == "quit" || input == "exit") {
-                break;
+            if (input == "quit" || input == "exit") break;
+            const auto command = commands.process(input);
+            if (command.handled) {
+                if (!command.output.empty()) std::cout << command.output << '\n';
+                if (command.exit_requested) break;
+                if (command.model_changed) rebuild_model();
+                continue;
             }
+
+            bool streamed = false;
+            std::size_t stream_step = 0;
+            agent::AgentLoop loop(
+                *model, tools, context, config.loop,
+                [&](const agent::AgentEvent& event) {
+                    if (event.type == agent::EventType::ModelTextDelta) {
+                        if (!streamed || stream_step != event.step) {
+                            if (streamed) std::cout << '\n';
+                            std::cout << "assistant: ";
+                            streamed = true;
+                            stream_step = event.step;
+                        }
+                        std::cout << event.detail << std::flush;
+                    }
+                    if (config.trace) {
+                        std::cerr << "[trace] " << event_name(event.type)
+                                  << " step=" << event.step;
+                        if (event.type != agent::EventType::ModelTextDelta &&
+                            !event.detail.empty()) {
+                            std::cerr << " detail=" << event.detail;
+                        }
+                        std::cerr << '\n';
+                    }
+                });
             const auto result = loop.run(input);
-            std::cout << (result.ok ? "assistant: " : "error: ")
-                      << result.output << '\n';
+            if (streamed) std::cout << '\n';
+            if (!result.ok) {
+                std::cout << "error: " << result.output << '\n';
+            } else if (!streamed) {
+                std::cout << "assistant: " << result.output << '\n';
+            }
         }
         return 0;
     } catch (const std::exception& error) {

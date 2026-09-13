@@ -1,4 +1,5 @@
 #include "agent/agent_loop.hpp"
+#include "agent/cli_commands.hpp"
 #include "agent/config.hpp"
 #include "agent/curl_cli_transport.hpp"
 #include "agent/openai/responses_model.hpp"
@@ -35,7 +36,9 @@ void require_throws(Function&& function, const std::string& message) {
 
 class ToolCallingModel final : public agent::IModel {
 public:
-    agent::ModelResponse generate(const agent::ModelRequest& request) override {
+    agent::ModelResponse generate(
+        const agent::ModelRequest& request,
+        const TextDeltaCallback& = {}) override {
         const auto& messages = request.messages;
         if (messages.back().role == agent::Role::Tool) {
             return {"answer=" + messages.back().content, {}, true, {}};
@@ -171,14 +174,17 @@ void test_responses_model_with_fake_transport() {
         }.dump(),
     };
 
-    agent::openai::ResponsesModel model(
-        transport,
-        {"https://example.test/v1/responses", "test-key", "test-model"});
+    agent::openai::ResponsesConfig non_streaming;
+    non_streaming.endpoint = "https://example.test/v1/responses";
+    non_streaming.api_key = "test-key";
+    non_streaming.model = "test-model";
+    non_streaming.stream = false;
+    agent::openai::ResponsesModel model_with_json(transport, non_streaming);
     agent::ModelRequest request;
     request.messages.push_back({agent::Role::User, "8 * 9", {}, {}, false});
     request.tools.push_back(agent::CalculatorTool{}.definition());
 
-    const auto response = model.generate(request);
+    const auto response = model_with_json.generate(request);
     require(!response.final, "function call response should continue the loop");
     require(response.response_id == "resp_123", "response id should be retained");
     require(response.tool_calls.size() == 1, "one function call should decode");
@@ -231,6 +237,66 @@ void test_streamed_function_call_assembly() {
             "stream should concatenate and parse argument deltas");
 }
 
+void test_responses_model_streams_text_deltas() {
+    FakeHttpTransport transport;
+    transport.response.status_code = 200;
+    transport.response.body =
+        "event: response.output_text.delta\n"
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello \"}\n\n"
+        "event: response.output_text.delta\n"
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"world\"}\n\n"
+        "event: response.completed\n"
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_stream\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello world\"}]}]}}\n\n";
+
+    agent::openai::ResponsesConfig config;
+    config.endpoint = "https://example.test/v1/responses";
+    config.api_key = "test-key";
+    config.model = "stream-model";
+    agent::openai::ResponsesModel model(transport, config);
+    agent::ModelRequest request;
+    request.messages.push_back({agent::Role::User, "hello", {}, {}, false});
+    std::string deltas;
+    const auto response = model.generate(
+        request, [&](std::string_view delta) { deltas += delta; });
+
+    require(deltas == "hello world", "stream callback should receive text deltas");
+    require(response.text == "hello world", "stream should assemble final response");
+    require(agent::Json::parse(transport.last_request.body)["stream"] == true,
+            "streaming model request should enable stream mode");
+}
+
+void test_cli_commands() {
+    const auto directory = std::filesystem::temp_directory_path() /
+                           "cpp-agent-command-skills";
+    std::filesystem::create_directories(directory / "sample");
+    {
+        std::ofstream skill(directory / "sample" / "SKILL.md");
+        skill << "---\nname: sample\ndescription: Sample skill\n---\nDo sample work.\n";
+    }
+    agent::SkillRegistry skills;
+    skills.load_directory(directory);
+    agent::AppConfig config;
+    config.provider = agent::ProviderKind::ResponsesApi;
+    config.api.model = "old-model";
+    config.api.api_key_env = "SECRET_ENV";
+    agent::CliCommandProcessor commands(config, skills);
+
+    require(!commands.process("hello").handled,
+            "ordinary input should not be treated as a command");
+    const auto changed = commands.process("/model new-model");
+    require(changed.model_changed && config.api.model == "new-model",
+            "/model should switch the session model");
+    require(commands.process("/skills").output.find("sample") != std::string::npos,
+            "/skills should list loaded skills");
+    require(commands.process("/skills sample").output.find("Do sample work") !=
+                std::string::npos,
+            "/skills NAME should show instructions");
+    require(commands.process("/config").output.find("SECRET_ENV") !=
+                std::string::npos,
+            "/config should show the key environment name");
+    std::filesystem::remove_all(directory);
+}
+
 void test_configuration_loading_and_environment() {
     const auto path = std::filesystem::temp_directory_path() /
                       "cpp-agent-harness-config-test.json";
@@ -277,6 +343,7 @@ void test_configuration_loading_and_environment() {
     auto config = agent::ConfigLoader::load_file(path);
     const std::map<std::string, std::string> environment{
         {"CPP_AGENT_MODEL", "environment-model"},
+        {"CPP_AGENT_API_STREAM", "false"},
         {"CPP_AGENT_TRACE", "true"},
         {"TEST_API_KEY", "test-secret"},
     };
@@ -295,6 +362,7 @@ void test_configuration_loading_and_environment() {
     require(config.api.model == "environment-model",
             "environment should override model from file");
     require(config.trace, "environment should override trace");
+    require(!config.api.stream, "environment should override streaming mode");
     require(config.context.max_estimated_tokens == 2048,
             "context configuration should load");
     require(config.loop.max_steps == 7, "loop configuration should load");
@@ -340,6 +408,7 @@ void test_responses_model_without_api_key() {
     config.endpoint = "http://127.0.0.1:8080/v1/responses";
     config.model = "local-model";
     config.require_api_key = false;
+    config.stream = false;
     agent::openai::ResponsesModel model(transport, config);
 
     agent::ModelRequest request;
@@ -372,6 +441,8 @@ int main() {
         test_responses_model_with_fake_transport();
         test_sse_parser_across_chunks();
         test_streamed_function_call_assembly();
+        test_responses_model_streams_text_deltas();
+        test_cli_commands();
         test_configuration_loading_and_environment();
         test_local_configuration_is_reserved();
         test_responses_model_without_api_key();

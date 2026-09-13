@@ -87,7 +87,7 @@ void reject_unknown_fields(const Json& object,
 void parse_api(AppConfig& config, const Json& api) {
     reject_unknown_fields(
         api,
-        {"base_url", "model", "api_key_env", "require_api_key", "timeout_ms", "store"},
+        {"base_url", "model", "api_key_env", "require_api_key", "timeout_ms", "store", "stream"},
         "api");
     if (api.contains("base_url")) {
         config.api.base_url = api.at("base_url").get<std::string>();
@@ -107,6 +107,9 @@ void parse_api(AppConfig& config, const Json& api) {
     }
     if (api.contains("store")) {
         config.api.store = api.at("store").get<bool>();
+    }
+    if (api.contains("stream")) {
+        config.api.stream = api.at("stream").get<bool>();
     }
 }
 
@@ -220,6 +223,7 @@ void ConfigLoader::save_file(const AppConfig& config,
              {"require_api_key", config.api.require_api_key},
              {"timeout_ms", config.api.timeout.count()},
              {"store", config.api.store},
+             {"stream", config.api.stream},
          }},
         {"local",
          {
@@ -285,6 +289,10 @@ void ConfigLoader::apply_environment(AppConfig& config,
             throw std::invalid_argument("CPP_AGENT_API_TIMEOUT_MS cannot be negative");
         }
         config.api.timeout = std::chrono::milliseconds(number);
+    }
+    if (const auto value = environment("CPP_AGENT_API_STREAM")) {
+        config.api.stream =
+            parse_environment_bool(*value, "CPP_AGENT_API_STREAM");
     }
     if (const auto value = environment("CPP_AGENT_TRACE")) {
         config.trace = parse_environment_bool(*value, "CPP_AGENT_TRACE");

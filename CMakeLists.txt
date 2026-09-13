@@ -8,6 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(agent_harness
     src/agent_loop.cpp
+    src/cli_commands.cpp
     src/config.cpp
     src/context_manager.cpp
     src/curl_cli_transport.cpp

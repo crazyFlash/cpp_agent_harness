@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 
 
 class FakeResponsesHandler(http.server.BaseHTTPRequestHandler):
@@ -29,6 +30,8 @@ class FakeResponsesHandler(http.server.BaseHTTPRequestHandler):
                 raise AssertionError("model was not loaded from configuration")
             if request["input"][-1]["content"] != "hello from integration test":
                 raise AssertionError("user input was not encoded")
+            if request.get("stream") is not True:
+                raise AssertionError("Responses API request did not enable streaming")
 
             response = {
                 "id": "resp_integration",
@@ -42,12 +45,25 @@ class FakeResponsesHandler(http.server.BaseHTTPRequestHandler):
                     }
                 ],
             }
-            encoded = json.dumps(response).encode()
             self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(encoded)))
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
             self.end_headers()
-            self.wfile.write(encoded)
+            for delta in ["integration ", "response"]:
+                event = {
+                    "type": "response.output_text.delta",
+                    "delta": delta,
+                }
+                self.wfile.write(
+                    f"event: response.output_text.delta\ndata: {json.dumps(event)}\n\n".encode()
+                )
+                self.wfile.flush()
+                time.sleep(0.03)
+            completed = {"type": "response.completed", "response": response}
+            self.wfile.write(
+                f"event: response.completed\ndata: {json.dumps(completed)}\n\n".encode()
+            )
+            self.wfile.flush()
         except Exception as error:  # surfaced in the parent thread below
             type(self).request_error = error
             self.send_response(500)
@@ -108,6 +124,8 @@ def main():
                 raise AssertionError(
                     f"CLI did not print the API response: {process.stdout}"
                 )
+            if process.stdout.count("assistant: integration response") != 1:
+                raise AssertionError("streamed output was printed more than once")
             if FakeResponsesHandler.request_error is not None:
                 raise FakeResponsesHandler.request_error
 

@@ -25,6 +25,7 @@ struct ApiConfig {
     bool require_api_key{true};
     std::chrono::milliseconds timeout{60000};
     bool store{false};
+    bool stream{true};
 };
 
 struct LocalModelConfig {

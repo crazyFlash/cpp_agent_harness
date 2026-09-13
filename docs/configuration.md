@@ -75,7 +75,8 @@ Demo Provider 不访问网络，用于验证 Agent Loop 和 Calculator Tool。
     "api_key_env": "OPENAI_API_KEY",
     "require_api_key": true,
     "timeout_ms": 60000,
-    "store": false
+    "store": false,
+    "stream": true
   }
 }
 ```
@@ -102,7 +103,8 @@ export OPENAI_API_KEY='your-api-key'
     "api_key_env": "",
     "require_api_key": false,
     "timeout_ms": 60000,
-    "store": false
+    "store": false,
+    "stream": true
   }
 }
 ```
@@ -137,7 +139,25 @@ Harness 会在 `base_url` 后补充 `/responses`。如果 `base_url` 已以 `/re
 | `CPP_AGENT_API_KEY_ENV` | 指定保存 API Key 的环境变量名称 |
 | `CPP_AGENT_API_REQUIRE_KEY` | `true/false` 或 `1/0` |
 | `CPP_AGENT_API_TIMEOUT_MS` | 请求超时毫秒数 |
+| `CPP_AGENT_API_STREAM` | 是否使用 SSE 流式响应，默认 `true` |
 | `CPP_AGENT_TRACE` | 是否输出 Agent Trace |
+
+## 交互式内置指令
+
+内置指令在本地处理，不会发送给模型：
+
+```text
+/help
+/model
+/model MODEL_ID
+/skills
+/skills SKILL_NAME
+/config
+/quit
+```
+
+`/model MODEL_ID` 只修改当前进程中的 Responses API 模型，不会改写配置文件；
+`/config` 只显示脱敏配置，不显示 API Key。
 
 ## 其他配置
 

@@ -32,9 +32,9 @@ void ResponsesStreamAssembler::consume_item(const Json& item) {
     call.arguments = item.value("arguments", call.arguments);
 }
 
-void ResponsesStreamAssembler::consume(const SseEvent& event) {
+std::string ResponsesStreamAssembler::consume(const SseEvent& event) {
     if (event.data.empty() || event.data == "[DONE]") {
-        return;
+        return {};
     }
 
     Json payload;
@@ -47,7 +47,9 @@ void ResponsesStreamAssembler::consume(const SseEvent& event) {
 
     const auto type = payload.value("type", event.event);
     if (type == "response.output_text.delta") {
-        text_ += payload.value("delta", std::string{});
+        auto delta = payload.value("delta", std::string{});
+        text_ += delta;
+        return delta;
     } else if (type == "response.output_item.added" ||
                type == "response.output_item.done") {
         if (payload.contains("item")) {
@@ -80,6 +82,7 @@ void ResponsesStreamAssembler::consume(const SseEvent& event) {
     } else if (type == "response.failed" || type == "error") {
         throw std::runtime_error("Responses API stream reported failure: " + payload.dump());
     }
+    return {};
 }
 
 ModelResponse ResponsesStreamAssembler::result() const {

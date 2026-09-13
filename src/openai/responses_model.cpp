@@ -1,4 +1,6 @@
 #include "agent/openai/responses_model.hpp"
+#include "agent/openai/responses_stream.hpp"
+#include "agent/openai/sse_parser.hpp"
 
 #include <sstream>
 #include <stdexcept>
@@ -163,20 +165,61 @@ ModelResponse ResponsesCodec::decode_response(const Json& response) {
 ResponsesModel::ResponsesModel(IHttpTransport& transport, ResponsesConfig config)
     : transport_(transport), config_(std::move(config)) {}
 
-ModelResponse ResponsesModel::generate(const ModelRequest& request) {
+ModelResponse ResponsesModel::generate(const ModelRequest& request,
+                                       const TextDeltaCallback& on_text_delta) {
     if (config_.require_api_key && config_.api_key.empty()) {
         throw std::invalid_argument("Responses API key cannot be empty");
     }
 
-    const auto body = ResponsesCodec::encode_request(request, config_);
+    const auto body = ResponsesCodec::encode_request(request, config_, config_.stream);
     HttpRequest http_request;
     http_request.url = config_.endpoint;
     http_request.headers = {{"Content-Type", "application/json"}};
+    if (config_.stream) {
+        http_request.headers["Accept"] = "text/event-stream";
+    }
     if (!config_.api_key.empty()) {
         http_request.headers["Authorization"] = "Bearer " + config_.api_key;
     }
     http_request.body = body.dump();
     http_request.timeout = config_.timeout;
+
+    if (config_.stream) {
+        SseParser parser;
+        ResponsesStreamAssembler assembler;
+        std::string response_body;
+        const auto response = transport_.send_stream(
+            http_request,
+            [&](std::string_view chunk) {
+                if (response_body.size() < 1000) {
+                    response_body.append(
+                        chunk.substr(0, 1000 - response_body.size()));
+                }
+                for (const auto& event : parser.feed(chunk)) {
+                    const auto delta = assembler.consume(event);
+                    if (on_text_delta && !delta.empty()) {
+                        on_text_delta(delta);
+                    }
+                }
+            });
+        for (const auto& event : parser.finish()) {
+            const auto delta = assembler.consume(event);
+            if (on_text_delta && !delta.empty()) {
+                on_text_delta(delta);
+            }
+        }
+        if (response.status_code < 200 || response.status_code >= 300) {
+            throw std::runtime_error(
+                "Responses API HTTP status " +
+                std::to_string(response.status_code) +
+                (response_body.empty() ? std::string{} : ": " + response_body));
+        }
+        if (!assembler.completed()) {
+            throw std::runtime_error(
+                "Responses API stream ended before response.completed");
+        }
+        return assembler.result();
+    }
 
     const auto response = transport_.send(http_request);
     if (response.status_code < 200 || response.status_code >= 300) {
